@@ -1,0 +1,89 @@
+# Selected original stdout lines; individual identifiers and unrelated services omitted.
+
+# identity.json; source exit=0
+	"kernel": "6.18.26",
+	"model": "TP-Link Archer AX80 v1 (EU, UBI)",
+	"board_name": "tplink,archer-ax80-v1-eu-ubi",
+		"distribution": "OpenWrt",
+		"version": "SNAPSHOT",
+		"revision": "r0-d4ebffe5",
+
+# flash-health.json; source exit=0
+/sys/class/mtd/mtd0
+name=boot
+size=2097152
+erasesize=131072
+flags=0x0
+ecc_failures=0
+bad_blocks=0
+/sys/class/mtd/mtd0ro
+/sys/class/mtd/mtd1
+name=bl2
+size=1048576
+erasesize=131072
+flags=0x0
+ecc_failures=0
+bad_blocks=0
+/sys/class/mtd/mtd1ro
+/sys/class/mtd/mtd2
+name=factory
+size=1048576
+erasesize=131072
+flags=0x0
+ecc_failures=0
+bad_blocks=0
+/sys/class/mtd/mtd2ro
+/sys/class/mtd/mtd3
+name=ubi
+size=132120576
+erasesize=131072
+flags=0x400
+ecc_failures=0
+bad_blocks=0
+/sys/class/mtd/mtd3ro
+
+# memory-storage.json; source exit=0
+/dev/root                44.3M     44.3M         0 100% /rom
+/dev/ubi0_5              33.7M      4.1M     27.9M  13% /overlay
+overlayfs:/overlay       33.7M      4.1M     27.9M  13% /
+/dev/root on /rom type squashfs (ro,relatime,errors=continue)
+/dev/ubi0_5 on /overlay type ubifs (rw,noatime,assert=read-only,ubi=0,vol=5)
+overlayfs:/overlay on / type overlay (rw,noatime,lowerdir=/,upperdir=/overlay/upper,workdir=/overlay/work,xino=off)
+Volumes count:                           6
+Logical eraseblock size:                 126976 bytes, 124.0 KiB
+Total amount of logical eraseblocks:     1008 (127991808 bytes, 122.0 MiB)
+Amount of available logical eraseblocks: 0 (0 bytes)
+Count of bad physical eraseblocks:       0
+Count of reserved physical eraseblocks:  20
+Minimum input/output unit size:          2048 bytes
+Volume ID:   0 (on ubi0)
+Type:        static
+Size:        8 LEBs (1015808 bytes, 992.0 KiB)
+Data bytes:  1004628 bytes (981.0 KiB)
+State:       OK
+Name:        fip
+Volume ID:   1 (on ubi0)
+Type:        dynamic
+Size:        1 LEBs (126976 bytes, 124.0 KiB)
+State:       OK
+Name:        ubootenv
+Volume ID:   2 (on ubi0)
+Type:        dynamic
+Size:        1 LEBs (126976 bytes, 124.0 KiB)
+State:       OK
+Name:        ubootenv2
+Volume ID:   3 (on ubi0)
+Type:        dynamic
+Size:        416 LEBs (52822016 bytes, 50.3 MiB)
+State:       OK
+Name:        fit
+Volume ID:   4 (on ubi0)
+Type:        dynamic
+Size:        238 LEBs (30220288 bytes, 28.8 MiB)
+State:       OK
+Name:        recovery
+Volume ID:   5 (on ubi0)
+Type:        dynamic
+Size:        318 LEBs (40378368 bytes, 38.5 MiB)
+State:       OK
+Name:        rootfs_data

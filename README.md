@@ -1,80 +1,52 @@
-# Archer AX80 EU v1: replacement bootchain and unified UBI case report
+# How one Archer AX80 EU ended up with a new bootchain
 
-Draft for owner review. Not an installer, not a release, and not a universal flashing guide.
+[Русская версия](README.ru.md)
 
-## Scope and attribution
+I wanted a router that could hold the software I actually used without depending on a USB stick for its writable storage. My TP-Link Archer AX80 **EU v1.0** already had OpenWrt alongside the vendor system. It worked, but the two-slot flash arrangement left much less useful space than the chip's advertised capacity suggested.
 
-This report describes one owner's TP-Link Archer AX80 EU hardware revision v1.0. The device was migrated from the vendor bootchain and its two-slot arrangement to a replacement BL2/TF-A/U-Boot chain with production and recovery images in a unified UBI layout.
+This repository tells what happened next: the failed attempts, the checks that changed the plan, the local source changes, and the eventual boot from a replacement BL2/TF-A/U-Boot chain with one UBI area. It is **one case, not an installation guide**. I did it without an attached UART adapter; that was a risk accepted for this device, not evidence that UART is unnecessary. A failed bootloader write can leave a brick with no network recovery. Losing the original Wi-Fi calibration can leave a booting router with broken radios.
 
-The migration was performed without a connected UART adapter. That is an observation about one attempt, NOT a recommendation to omit UART or a claim of safe recovery without it. A wrong bootloader, interrupted write, or incompatible NAND layout can make network recovery unavailable. Backups alone do not provide a working restoration interface.
+## The route was not straight
 
-Relevant upstream work, rather than original board support claimed by this report:
+1. **The big image failed.** On 7 October a roughly 50.4 MB custom image did not boot and the device returned to the vendor system. The earlier OpenWrt slot had roughly 44 MB of real capacity. Oversize was a likely explanation; the vendor boot counter was another possibility. We did not establish which one caused the failure. `sysupgrade -T` accepting the file had not checked that capacity.
+2. **Backups came before another attempt.** Starting from vendor firmware 1.1.2, we obtained temporary administrative access through the telnet-enable method. We read the seven exposed partitions twice and checked the factory files separately. Those reads covered 123 MiB, not the whole 128 MiB chip or its OOB data.
+3. **A diagnostic image worked, but led to a dead end.** We enlarged the old kernel volume, wrote a read-only diagnostic FIT and booted it. It exposed the missing NAND tail and allowed a full 128 MiB partition-data backup. It also refused NAND writes. There was no demonstrated kexec exit. We had to use the vendor recovery route while the vendor chain still existed, return to stock, and take a different route into a writable migration initramfs.
+4. **The bootchain was prepared offline.** The custom loader enabled the current redundant-env option and added checks around TFTP and write failures. We checked FIT contents, UBI geometry, payload sizes and environment CRCs. We filled the two environment copies in advance so first boot would select recovery without depending on an interactive firstboot menu.
+5. **The flash changed in three separate stages.** Factory data prepared from this router's own backup went first, then the unified UBI image, then BL2. Each stage had readback checks. This was not an atomic transaction: a power failure in the middle could still have made it unbootable.
+6. **Recovery booted, then production booted.** The first boot used the RAM recovery system from its stored FIT. After a separate environment change, the production system booted from internal NAND. An ordinary reboot later retained settings. USB extroot was no longer needed.
 
-- [OpenWrt PR #19440: Archer AX80 U-Boot/UBI layout proposal](https://github.com/openwrt/openwrt/pull/19440).
-- [OpenWrt PR #21640: related AX80 UBI support work](https://github.com/openwrt/openwrt/pull/21640).
-- [dangowrt/owrt-ubi-installer](https://github.com/dangowrt/owrt-ubi-installer): conceptual reference for an installer carrying a replacement bootchain and recovery image. Its documented targets include Linksys E8450 and Belkin RT3200; their images are NOT AX80 images.
+The detailed record, including historical commands and their explanations, starts at [docs/README.md](docs/README.md). Commands that wrote flash are shown as evidence, with private paths removed. There is no ready-to-run migration installer.
 
-No upstream PR status or release-support claim is implied. Check the linked projects before selecting a build.
+## What actually worked
 
-## Starting point and preparation
+The installed custom system reported `tplink,archer-ax80-v1-eu-ubi`, OpenWrt SNAPSHOT `r0-d4ebffe5`, Linux `6.18.26`, SquashFS `/rom` and a writable internal UBIFS overlay. Its six volumes were `fip`, `ubootenv`, `ubootenv2`, `fit`, `recovery`, and `rootfs_data`. The later audit had about 27.9 MiB of free overlay space. Calibration readback matched the prepared private factory backup; this checks preservation, not radio performance.
 
-The vendor firmware used for initial access was 1.1.2. Root access was obtained through the device's telnet-enable method. The router had previously used a vendor/OpenWrt two-slot setup; the available persistent space was insufficient for the desired custom package set.
+Ethernet access and router-originated DNS/HTTPS worked. Both Wi-Fi APs were enabled by the audit. A physical WPS press opened PBC on both radios for 120 seconds, but no client was paired. Some LED indication and software button handlers were checked. NAND health counters showed no reported failures or bad blocks in the saved snapshot.
 
-Preparation included repeated backup verification, analysis of the existing NAND/bootchain, initramfs diagnostics, Linux/WSL builds, FIT compatibility and hash checks, UBI geometry checks, environment CRC checks, and comparison of the factory/calibration partition before and after migration.
+## Three builds, three different claims
 
-An early read-only diagnostic image did not permit migration. The vendor recovery path was used during that earlier stage. Those vendor recovery procedures must not be assumed to apply after replacing the bootchain and layout. Running from initramfs does not itself remove MTD write protection: that depends on the kernel/device tree and the actual target mapping.
-
-This draft deliberately omits destructive commands and installation artifacts. It is not sufficient to reproduce the migration.
-
-## Observed result
-
-The replacement chain booted recovery and then production. A subsequent ordinary reboot successfully booted production from internal NAND, with persistent settings and the same SSH host identity.
-
-| Item | Observed state in the local audit |
+| Set | What the record supports |
 | --- | --- |
-| Board identifier | `tplink,archer-ax80-v1-eu-ubi` |
-| Build source | OpenWrt commit `d4ebffe538ab94d9b5a604f4bba28325f38ed3d8` |
-| Running system | SNAPSHOT `r0-d4ebffe5`, Linux `6.18.26` |
-| Persistent storage | SquashFS `/rom`, read/write UBIFS overlay on internal NAND |
-| UBI volumes | `fip`, `ubootenv`, `ubootenv2`, `fit`, `recovery`, `rootfs_data` |
-| Protected partitions | Boot/BL2/factory read-only in the running production system |
-| Factory data | SHA-256 matched the retained pre-migration factory backup |
-| Environment | Both copies had valid CRCs; environment tools used the actual UBI volumes |
-| NAND counters | No ECC failures or bad blocks reported in the audit snapshot |
-| Available overlay | Approximately 27.9 MiB free at the audit snapshot |
-| Wi-Fi | Both access points enabled; client traffic not tested in this audit |
-| USB | Storage/ext4 device detected; no USB extroot dependency |
+| Custom October 8–9 installation | Recovery, production and ordinary production reboot observed on one router, with local changes |
+| Later custom rebuild | Offline checks only; production exceeds the old FIT volume, recovery has only 73,728 bytes of headroom; not ready to flash |
+| October 13 rebase | Both EU profiles compiled; six artifacts checked; never run on the router; clean loader still lacks enabled redundant env |
 
-These are snapshot observations, not flash endurance tests or proof that all hardware paths work.
+The rebase preserved the two upstream commits and resolved only the board-list conflicts. Its first build hit a shell error because Windows paths containing parentheses entered WSL's `PATH`; rebuilding with a Linux-only `PATH` succeeded. None of our five old local patches was applied to that clean rebase. An optional review fixup was inspected but not built; it is not presented here as used migration code.
 
-## Follow-up findings potentially useful upstream
+## What remains unknown
 
-1. Environment utilities must describe the real redundant environment volumes and their LEB geometry, rather than reuse settings for the vendor layout.
-2. A production FIT exceeding the existing `fit` volume is not automatically incompatible with standard sysupgrade. The inspected board updater used `fit_do_upgrade`, `nand_upgrade_fit`, and `nand_upgrade_prepare_ubi` to recreate the production FIT and writable data volumes. Directly writing the larger image into the old volume would not fit. This updater path was inspected, not exercised with the later rebuilt images.
-3. The front WPS button opened PBC on both APs for 120 seconds using full `wpad-mbedtls` and `hostapd-utils`. An existing hostapd process had to be replaced after package changes. Client pairing remains untested.
-4. AP netdev `link/tx/rx` triggers restored the expected Wi-Fi LED indication in this custom configuration. This does not establish a general defect in the upstream radio triggers.
-5. A custom rear-button handler implements short press for LEDs and a hold of at least two seconds for Wi-Fi. Software LED toggling was checked; physical short/long press validation remains pending.
-6. USB storage detection and the configured USB presence LED were checked. Physical removal behavior remains pending.
+Physical recovery-button entry, UART restoration, returning this new layout to stock, deliberate failure recovery, WPS client pairing, every Ethernet port, Wi-Fi throughput, client VPN/DNS/IPv6 behavior and sustained load were not demonstrated. The vendor dual-slot fallback is gone. Reset selecting TFTP is an inference from the saved environment, not a tested rescue procedure. U-Boot cannot promise fallback once it has handed control to a hung kernel.
 
-These are candidates for focused patches after checking the current upstream implementation. No upstream-ready code patch is included in this draft.
+## Where the work is
 
-## Recovery and update limits
+- [Detailed stages and glossary](docs/README.md)
+- [Patches and attribution](patches/README.md)
+- [Historical scripts](scripts/README.md) and [build configs](configs/README.md)
+- [Evidence and its limits](evidence/README.md)
+- [Firmware inventory with recomputed SHA256](RELEASES.md); no binaries in git
+- [Sanitization report](SANITIZE-REPORT.md) and [license: GPL-2.0](LICENSE)
 
-The inspected boot command checks buttons, attempts production, then recovery, then TFTP. This does NOT guarantee fallback after a kernel hangs once U-Boot has handed over execution.
-
-The recovery image previously booted, but the physical recovery-button path and intentional failure recovery have not been tested. UART-assisted restoration has not been tested. A later rebuilt production/recovery pair passed offline validation but was NOT installed or boot-tested, and remains explicitly not ready to flash.
-
-During the audit the existing production FIT volume was 52,822,016 bytes. The later production image was 53,121,315 bytes and would require volume recreation by the applicable updater. The later recovery image was 30,146,560 bytes against a 30,220,288-byte recovery volume, leaving only 73,728 bytes. Future growth requires renewed size and layout checks.
-
-For normal updates, do not rerun a migration installer or replace BL2/FIP unnecessarily. Preserved configuration archives need separate review because they can restore old init scripts and overrides over a new image.
-
-## Not yet demonstrated
-
-- Client internet/VPN routing, DNS/IPv6 behavior, subscription device headers, or performance under load.
-- WPS client pairing, physical rear-button behavior, and USB removal handling.
-- Physical recovery entry, failure fallback, or restoration through UART.
-- Hardware boot of the later rebuilt image pair.
-- Applicability to other AX80 regions, hardware revisions, NAND geometries, or firmware versions.
+The board support belongs to its upstream contributors. See [OpenWrt PR #21640](https://github.com/openwrt/openwrt/pull/21640), [the posted test comment](https://github.com/openwrt/openwrt/pull/21640#issuecomment-6175000087), and [forum topic 242149](https://forum.openwrt.org/t/242149). PR #19440 and the E8450/RT3200 UBI installer informed research; neither supplies interchangeable AX80 binaries.
 
 ## Publication boundaries
 

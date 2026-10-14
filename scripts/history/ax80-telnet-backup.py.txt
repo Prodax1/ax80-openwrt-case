@@ -1,0 +1,211 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Collect AX80 diagnostics and backups over an existing LAN root telnet shell."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
+from pathlib import Path
+import re
+import shlex
+import socket
+import time
+import uuid
+
+
+class Shell:
+    def __init__(self, host):
+        self.sock = socket.create_connection((host, 23), timeout=10)
+        self.sock.settimeout(1)
+        self.pending = b''
+        self.read_idle()
+
+    def receive(self):
+        raw = self.pending + self.sock.recv(65536)
+        self.pending = b''
+        result = bytearray()
+        i = 0
+        while i < len(raw):
+            if raw[i] != 255:
+                result.append(raw[i])
+                i += 1
+                continue
+            if i + 1 >= len(raw):
+                self.pending = raw[i:]
+                break
+            command = raw[i + 1]
+            if command == 255:
+                result.append(255)
+                i += 2
+            elif command in (251, 252, 253, 254):
+                if i + 2 >= len(raw):
+                    self.pending = raw[i:]
+                    break
+                if command == 251:
+                    self.sock.sendall(bytes([255, 254, raw[i + 2]]))
+                elif command == 253:
+                    self.sock.sendall(bytes([255, 252, raw[i + 2]]))
+                i += 3
+            elif command == 250:
+                end = raw.find(b'\xff\xf0', i + 2)
+                if end < 0:
+                    self.pending = raw[i:]
+                    break
+                i = end + 2
+            else:
+                i += 2
+        return bytes(result)
+
+    def read_idle(self):
+        result = bytearray()
+        while True:
+            try:
+                data = self.receive()
+                if not data:
+                    break
+                result.extend(data)
+            except socket.timeout:
+                break
+        return bytes(result)
+
+    def run(self, command, timeout=60):
+        marker = 'AX80_' + uuid.uuid4().hex
+        self.sock.sendall(("printf '\\n" + marker + "_START\\n'; " + command +
+                           "; printf '\\n" + marker + "_END:%s\\n' \"$?\"\n").encode())
+        result = bytearray()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data = self.receive()
+                if not data:
+                    raise RuntimeError('Telnet connection closed')
+                result.extend(data)
+                normalized = bytes(result).replace(b'\r', b'')
+                end = re.search(rb'\n' + marker.encode() + rb'_END:(\d+)\n', normalized)
+                if end:
+                    start = normalized.find(b'\n' + marker.encode() + b'_START\n')
+                    if start < 0:
+                        raise RuntimeError('Missing command start marker')
+                    content = normalized[start + len(marker) + 8:end.start()]
+                    code = int(end.group(1))
+                    if code:
+                        raise RuntimeError('Remote command failed: ' + str(code))
+                    return content.decode('utf-8', errors='replace')
+            except socket.timeout:
+                continue
+        raise TimeoutError('Remote command timed out')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--host', default='<ADDRESS>')
+    parser.add_argument('--destination', type=Path)
+    args = parser.parse_args()
+    shell = Shell(args.host)
+    diagnostics = {
+        'identity': shell.run('id; uname -a'),
+        'mtd': shell.run('cat /proc/mtd'),
+        'memory': shell.run('cat /proc/meminfo | head -n 5'),
+        'tools': shell.run('command -v nanddump; command -v sha256sum; command -v md5sum; command -v nc; command -v httpd; command -v tar; command -v base64; true'),
+        'mounts': shell.run('cat /proc/mounts'),
+        'busybox': shell.run('busybox --list'),
+        'nanddump_help': shell.run('nanddump --help 2>&1; true'),
+        'factory_files': shell.run('ls -l /tp_data/MT7986_EEPROM.bin /tp_data/default-mac 2>/dev/null; true'),
+        'nand': shell.run("dmesg | grep -iE 'nand|bad block|ecc'; true"),
+        'geometry': shell.run('for d in /sys/class/mtd/mtd[0-9]; do echo "$d"; for f in name offset size erasesize writesize oobsize bad_blocks bbt_blocks corrected_bits ecc_failures; do if test -f "$d/$f"; then echo "$f=$(cat "$d/$f")"; fi; done; done'),
+        'nc_help': shell.run('nc --help 2>&1; true'),
+    }
+    if args.destination:
+        args.destination.mkdir(parents=True, exist_ok=False)
+        (args.destination / 'diagnostics.json').write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding='utf-8')
+        backup(shell, args.destination, diagnostics)
+        shell.sock.close()
+        return
+    print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
+    shell.sock.close()
+
+
+def backup(shell, destination, diagnostics):
+    rows = re.findall(r'^(mtd\d+): ([0-9a-f]+) ([0-9a-f]+) "([a-zA-Z0-9_-]+)"$', diagnostics['mtd'], re.M)
+    if len(rows) != 7 or [r[3] for r in rows] != ['boot', 'u-boot-env', 'ubi0', 'ubi1', 'userconfig', 'tp_data', 'mali_data']:
+        raise RuntimeError('Unexpected partition layout')
+    temp = '/tmp/ax80-backup-' + uuid.uuid4().hex
+    shell.run('mkdir -m 700 ' + temp)
+    manifest = {'host': '<ADDRESS>', 'date': '2026-10-08', 'method': 'MTD character-device reads; kernel ECC; no OOB',
+                'consistency': 'Live stock system; writable UBI partitions are not an atomic snapshot',
+                'coverage': 'All 7 exposed MTD partitions (123 MiB); unexposed NAND tail is not included', 'files': []}
+    manifest_path = destination / 'manifest.json'
+
+    def save_manifest():
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    def collect(remote, filename, expected=None):
+        remote_hash = shell.run('sha256sum ' + shlex.quote(remote)).split()[0]
+        size = int(shell.run('wc -c < ' + shlex.quote(remote)).strip())
+        if expected is not None and size != expected:
+            raise RuntimeError('Unexpected size for ' + filename)
+        local = destination / filename
+        partial = local.with_suffix(local.suffix + '.partial')
+        address = shell.sock.getsockname()[0]
+        listener = socket.socket()
+        listener.bind((address, 0))
+        listener.listen(1)
+        listener.settimeout(45)
+        port = listener.getsockname()[1]
+
+        def receive_file():
+            with listener:
+                connection, peer = listener.accept()
+                if peer[0] != '<ADDRESS>':
+                    connection.close()
+                    raise RuntimeError('Unexpected backup sender')
+                with connection, partial.open('xb') as stream:
+                    connection.settimeout(45)
+                    count = 0
+                    digest = hashlib.sha256()
+                    while count < size:
+                        block = connection.recv(min(1048576, size - count))
+                        if not block:
+                            raise RuntimeError('Incomplete transfer')
+                        stream.write(block)
+                        digest.update(block)
+                        count += len(block)
+                    return digest.hexdigest()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(receive_file)
+            shell.run('nc ' + address + ' ' + str(port) + ' < ' + shlex.quote(remote), timeout=180)
+            local_hash = future.result(timeout=60)
+        if local_hash != remote_hash:
+            raise RuntimeError('Checksum mismatch for ' + filename)
+        partial.rename(local)
+        manifest['files'].append({'name': filename, 'bytes': size, 'sha256': local_hash, 'verified': True})
+        save_manifest()
+        print(json.dumps({'file': filename, 'bytes': size, 'verified': True}), flush=True)
+        # Only delete the generated RAM copy after its verified PC copy exists.
+        if not re.fullmatch(r'/tmp/ax80-backup-[0-9a-f]{32}/[a-zA-Z0-9_.-]+', remote):
+            raise RuntimeError('Unsafe temporary path')
+        shell.run('rm ' + shlex.quote(remote))
+
+    save_manifest()
+    for index, size, erase, label in sorted(rows, key=lambda row: {'boot': 0, 'u-boot-env': 1, 'tp_data': 2}.get(row[3], 3)):
+        filename = index + '-' + label + '.bin'
+        remote = temp + '/' + filename
+        shell.run('cat /dev/' + index + ' > ' + remote, timeout=120)
+        collect(remote, filename, int(size, 16))
+    remote = temp + '/tp_data-files.tar'
+    shell.run('tar -cf ' + remote + ' -C /tp_data .', timeout=120)
+    collect(remote, 'tp_data-files.tar')
+    for name, expected in [('MT7986_EEPROM.bin', 20480), ('default-mac', 6)]:
+        remote = temp + '/' + name
+        shell.run('cp /tp_data/' + name + ' ' + remote)
+        collect(remote, name, expected)
+    after = shell.run('for d in /sys/class/mtd/mtd[0-9]; do echo "$d"; for f in bad_blocks corrected_bits ecc_failures; do if test -f "$d/$f"; then echo "$f=$(cat "$d/$f")"; fi; done; done')
+    (destination / 'ecc-after.txt').write_text(after, encoding='utf-8')
+    manifest['completed'] = True
+    save_manifest()
+    print(json.dumps({'completed': True, 'destination': str(destination), 'verified_files': len(manifest['files'])}, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,5 @@
+src-git packages http<LOCAL_SOURCE_DIR>
+src-git luci http<LOCAL_SOURCE_DIR>
+src-git routing http<LOCAL_SOURCE_DIR>
+src-git telephony http<LOCAL_SOURCE_DIR>
+src-git video http<LOCAL_SOURCE_DIR>

@@ -1,0 +1,58 @@
+1:  836fd1d062 = 1:  64e0dedb3b uboot-mediatek: add TP-Link Archer AX80 v1 EU
+2:  d4ebffe538 ! 2:  c45a44104b mediatek: add UBI layout for TP-Link Archer AX80 v1 EU
+    @@ target/linux/mediatek/dts/mt7986b-tplink-archer-ax80-v1-eu.dts
+     -};
+     
+      ## target/linux/mediatek/filogic/base-files/etc/board.d/01_leds ##
+    -@@ target/linux/mediatek/filogic/base-files/etc/board.d/01_leds: teltonika,rutc50)
+    +@@ target/linux/mediatek/filogic/base-files/etc/board.d/01_leds: teralink,tl3020-256mb)
+      totolink,x6000r)
+      	ucidef_set_led_netdev "wan" "wan" "green:wan" "wan" "link tx rx"
+      	;;
+    @@ target/linux/mediatek/filogic/base-files/etc/board.d/01_leds: teltonika,rutc50)
+     +tplink,archer-ax80-v1-eu-ubi)
+      	ucidef_set_led_netdev "lan" "LAN" "white:lan" "br-lan" "link tx rx"
+      	;;
+    - tplink,be450)
+    + tplink,be450|\
+     
+      ## target/linux/mediatek/filogic/base-files/etc/board.d/02_network ##
+     @@ target/linux/mediatek/filogic/base-files/etc/board.d/02_network: mediatek_setup_interfaces()
+    @@ target/linux/mediatek/filogic/base-files/etc/board.d/02_network: mediatek_setup_
+     +	tplink,archer-ax80-v1-eu-ubi)
+     +		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" eth1
+      		;;
+    - 	tplink,be450)
+    - 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 eth2" eth1
+    + 	tplink,be450|\
+    + 	tplink,be450-ubi)
+     
+      ## target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh ##
+     @@ target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh: platform_do_upgrade() {
+    - 	routerich,ax3000-ubootmod|\
+      	routerich,be7200|\
+      	snr,snr-cpe-ax2|\
+    + 	teralink,tl3020-256mb|\
+     +	tplink,archer-ax80-v1-eu-ubi|\
+    - 	tplink,tl-xdr4288|\
+    - 	tplink,tl-xdr6086|\
+    - 	tplink,tl-xdr6088|\
+    + 	tplink,be450-ubi|\
+    + 	tplink,tl-7dr7230*|\
+    + 	tplink,tl-7dr7250*|\
+     @@ target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh: platform_check_image() {
+    - 	netcore,n60|\
+    - 	qihoo,360t7|\
+    + 	qihoo,360t7-ubi|\
+      	routerich,ax3000-ubootmod|\
+    + 	teralink,tl3020-256mb|\
+     +	tplink,archer-ax80-v1-eu-ubi|\
+    - 	tplink,tl-xdr4288|\
+    - 	tplink,tl-xdr6086|\
+    - 	tplink,tl-xdr6088|\
+    + 	tplink,be450-ubi|\
+    + 	tplink,tl-7dr7230*|\
+    + 	tplink,tl-7dr7250*|\
+     
+      ## target/linux/mediatek/image/filogic.mk ##
+     @@ target/linux/mediatek/image/filogic.mk: define Device/tplink_archer-ax80-v1-eu

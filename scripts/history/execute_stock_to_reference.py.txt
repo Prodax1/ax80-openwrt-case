@@ -1,0 +1,94 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""User-approved official initramfs transition; kernel only, no BL2/env changes."""
+import base64
+import hashlib
+import json
+import time
+import uuid
+
+from identify_stock_readonly import MODULE, ROOT
+from diagnostic_preflight_plan import sysfs_records
+
+RAM = '/tmp/codex-initramfs-726621a7c4844eadba66d00e10a6051b'
+OLD_REFERENCE_SHA = 'abbc36e4a27a19187d910060311a023d64b740ae67b897854f08aeba47bc5755'
+BUSYBOX_SHA = '40c1db9549616024b4c47f1227c8243e092bd1dff3e3e17856be06c8826405b8'
+UBI_READ = 'for p in /sys/class/ubi/ubi0*; do [ -d "$p" ] || continue; echo "$p"; for f in mtd_num name type data_bytes reserved_ebs usable_eb_size avail_eraseblocks ro_mode corrupted upd_marker; do if [ -r "$p/$f" ]; then printf "%s=" "$f"; cat "$p/$f"; fi; done; done'
+
+
+def save(path, value):
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(value, stream, indent=2)
+
+
+def critical_hashes(shell):
+    result = {}
+    for device in ('mtd0', 'mtd1', 'mtd3', 'ubi0_0', 'ubi0_2'):
+        value = shell.run('sha256sum /dev/' + device).split()[0]
+        if len(value) != 64:
+            raise ValueError('Invalid hash')
+        result[device] = value
+    return result
+
+
+def main():
+    output = ROOT / ('stock-to-reference-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+    output.mkdir(exist_ok=False)
+    shell = MODULE.Shell('<ADDRESS>')
+    attempted = False
+    try:
+        identity = shell.run('id; uname -a; cat /proc/mtd')
+        if 'uid=0' not in identity or 'Linux Akronite 5.4.124' not in identity:
+            raise ValueError('Unexpected stock')
+        records = sysfs_records(shell.run(UBI_READ), '/sys/class/ubi/')
+        if records['ubi0']['mtd_num'] != '2' or records['ubi0']['avail_eraseblocks'] != '143':
+            raise ValueError('Wrong UBI parent/free space')
+        kernel = records['ubi0_1']
+        if (kernel['name'], kernel['type'], kernel['reserved_ebs'], kernel['data_bytes'], kernel['upd_marker'], kernel['corrupted']) != ('kernel', 'static', '27', '3428352', '0', '0'):
+            raise ValueError('Unexpected kernel target')
+        for name, expected in [('busybox', BUSYBOX_SHA), ('initramfs.bin', OLD_REFERENCE_SHA)]:
+            if shell.run('sha256sum ' + RAM + '/' + name).split()[0] != expected:
+                raise ValueError('RAM file mismatch')
+        before = critical_hashes(shell)
+        encoded = shell.run(RAM + '/busybox base64 /dev/ubi0_1', timeout=120)
+        original_kernel = base64.b64decode(encoded, validate=False)
+        if len(original_kernel) != 3428352 or hashlib.sha256(original_kernel).hexdigest() != shell.run('sha256sum /dev/ubi0_1').split()[0]:
+            raise ValueError('Original kernel backup mismatch')
+        with (output / 'original-stock-kernel.bin').open('xb') as stream:
+            stream.write(original_kernel)
+        save(output / 'before.json', {'identity': identity, 'ubi': records, 'critical_hashes': before,
+                                      'kernel_backup_sha256': hashlib.sha256(original_kernel).hexdigest()})
+        resize = RAM + '/busybox ubirsvol -n 1 -s 14602240 /dev/ubi0'
+        update = RAM + '/busybox ubiupdatevol /dev/ubi0_1 ' + RAM + '/initramfs.bin'
+        save(output / 'write-intent.json', {'resize': resize, 'update': update,
+                                           'user_authorized_route': 'official initramfs then manual writable initramfs',
+                                           'no_bl2_fip_factory_environment_write': True})
+        attempted = True
+        shell.run(resize)
+        resized = sysfs_records(shell.run(UBI_READ), '/sys/class/ubi/')
+        if resized['ubi0_1']['reserved_ebs'] != '115' or resized['ubi0']['avail_eraseblocks'] != '55':
+            raise ValueError('Unexpected resize result')
+        if shell.run('sha256sum /dev/ubi0_1').split()[0] != hashlib.sha256(original_kernel).hexdigest():
+            raise ValueError('Resize changed kernel data')
+        shell.run(update, timeout=120)
+        after = sysfs_records(shell.run(UBI_READ), '/sys/class/ubi/')
+        k = after['ubi0_1']
+        if (k['data_bytes'], k['reserved_ebs'], k['corrupted'], k['upd_marker']) != ('9309288', '115', '0', '0'):
+            raise ValueError('Unexpected update result')
+        if shell.run('sha256sum /dev/ubi0_1').split()[0] != OLD_REFERENCE_SHA or critical_hashes(shell) != before:
+            raise ValueError('Readback mismatch')
+        save(output / 'verified-before-reboot.json', {'ubi': after, 'kernel_sha256': OLD_REFERENCE_SHA,
+                                                     'neighbor_payloads_unchanged': True})
+        shell.run('(sleep 3; reboot) >/dev/null 2>&1 </dev/null & true')
+        save(output / 'result.json', {'reference_kernel_verified': True, 'reboot_dispatched_once': True,
+                                     'bootloader_updated': False})
+        print(json.dumps({'saved': str(output), 'reference_kernel_verified': True, 'reboot_dispatched_once': True}))
+    except Exception as error:
+        save(output / 'STOP.json', {'error': str(error), 'write_attempted': attempted, 'no_automatic_retry': True})
+        raise
+    finally:
+        shell.sock.close()
+
+
+if __name__ == '__main__':
+    main()

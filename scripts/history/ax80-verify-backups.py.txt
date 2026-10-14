@@ -1,0 +1,73 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Independently verify two AX80 backup sets without printing factory secrets."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import tarfile
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            result.update(block)
+    return result.hexdigest()
+
+
+def verify(directory):
+    manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8-sig'))
+    if not manifest.get('completed') or len(manifest['files']) != 10:
+        raise ValueError('Incomplete backup set')
+    hashes = {}
+    for entry in manifest['files']:
+        path = directory / entry['name']
+        if path.parent != directory or not path.is_file():
+            raise ValueError('Unexpected file path')
+        actual = digest(path)
+        if path.stat().st_size != entry['bytes'] or actual != entry['sha256']:
+            raise ValueError('Size or checksum mismatch: ' + entry['name'])
+        hashes[entry['name']] = actual
+    if len(hashes) != 10:
+        raise ValueError('Duplicate manifest filenames')
+    factory = {}
+    with tarfile.open(directory / 'tp_data-files.tar', 'r:') as archive:
+        members = archive.getmembers()
+        for name in ('MT7986_EEPROM.bin', 'default-mac'):
+            matching = [m for m in members if m.name.removeprefix('./') == name]
+            if len(matching) != 1 or not matching[0].isfile():
+                raise ValueError('Missing factory archive member')
+            data = archive.extractfile(matching[0]).read()
+            if data != (directory / name).read_bytes():
+                raise ValueError('Archive and standalone factory files differ')
+            factory[name] = data
+    if len(factory['MT7986_EEPROM.bin']) != 20480:
+        raise ValueError('Unexpected EEPROM size')
+    if len(set(factory['MT7986_EEPROM.bin'])) < 2:
+        raise ValueError('EEPROM appears blank')
+    mac = factory['default-mac']
+    if len(mac) != 6 or mac in (b'\x00' * 6, b'\xff' * 6) or mac[0] & 1:
+        raise ValueError('Invalid factory MAC')
+    ecc = (directory / 'ecc-after.txt').read_text(encoding='utf-8')
+    counters = re.findall(r'^(bad_blocks|corrected_bits|ecc_failures)=(\d+)$', ecc, re.M)
+    if len(counters) != 21 or any(int(value) for _, value in counters):
+        raise ValueError('Unexpected NAND/ECC counters')
+    return hashes
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('first', type=Path)
+    parser.add_argument('second', type=Path)
+    args = parser.parse_args()
+    sets = [verify(directory) for directory in (args.first, args.second)]
+    comparison = [{'file': name, 'identical': sets[0][name] == sets[1][name]} for name in sets[0]]
+    print(json.dumps({'both_sets_verified': True, 'factory_archive_matches_standalone': True,
+                      'eeprom_nonblank': True, 'factory_mac_valid': True, 'ecc_counters_zero': True,
+                      'comparison': comparison}, indent=2))
+
+
+if __name__ == '__main__':
+    main()

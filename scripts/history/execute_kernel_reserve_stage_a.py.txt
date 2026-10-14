@@ -1,0 +1,150 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""The separately approved stage A: grow kernel reservation once, never reboot."""
+import base64
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+import uuid
+
+import paramiko
+from backup_current_ssh import receive
+from diagnostic_preflight_plan import assess, sysfs_records
+from read_diagnostic_preflight_approved import APPROVED
+
+ROOT = Path(__file__).resolve().parent
+COMMAND = 'ubirsvol /dev/ubi0 -n 1 -S 115'
+READS = {
+    'identity': 'id; uname -a; cat /tmp/sysinfo/model; cat /tmp/sysinfo/board_name',
+    'boot_and_mounts': 'cat /proc/cmdline; cat /proc/mounts',
+    'mtd_fields': 'for p in /sys/class/mtd/mtd[0-9]*; do [ -r "$p/name" ] || continue; echo "$p"; for f in name size offset erasesize writesize oobsize flags bad_blocks corrected_bits ecc_failures; do printf "%s=" "$f"; cat "$p/$f"; done; done',
+    'ubi': 'for p in /sys/class/ubi/ubi*; do [ -d "$p" ] || continue; echo "$p"; for f in mtd_num name type data_bytes reserved_ebs usable_eb_size avail_eraseblocks eraseblock_size ro_mode corrupted upd_marker; do if [ -r "$p/$f" ]; then printf "%s=" "$f"; cat "$p/$f"; fi; done; done',
+}
+DEVICES = ('mtd0', 'mtd1', 'mtd3', 'mtd5', 'ubi0_0', 'ubi0_1', 'ubi0_2')
+OLD_KERNEL_SHA = '<PRIVATE_OR_ARTIFACT_PIN>'
+LOADER_SHA = '<PRIVATE_OR_ARTIFACT_PIN>'
+
+
+def read_state(connection):
+    sections = {name: receive(connection, command).decode() for name, command in READS.items()}
+    hashes = {}
+    for device in DEVICES:
+        digest = receive(connection, 'sha256sum /dev/' + device).decode().split()[0]
+        if not re.fullmatch('[0-9a-f]{64}', digest):
+            raise ValueError('Malformed hash')
+        hashes[device] = digest
+    return {'sections': sections, 'payload_hashes': hashes}
+
+
+def validate_before(state, fingerprint, factory_matches):
+    sections = state['sections']
+    if 'uid=0' not in sections['identity'] or 'Linux OpenWrt 6.12.71' not in sections['identity']:
+        raise ValueError('Unexpected privilege/kernel')
+    plan = assess({'approved_host_fingerprint': fingerprint, 'factory_matches_backups': factory_matches,
+                   'router_writes': False, 'sections': sections}, 9288608, expected_fingerprint=APPROVED)
+    if plan['kernel_volume'] != 'ubi0_1' or plan['required_kernel_lebs'] != 115:
+        raise ValueError('Wrong target volume or proposed size')
+    volumes = sysfs_records(sections['ubi'], '/sys/class/ubi/')
+    expected = {'ubi0_0': ('uboot', 6, 761856), 'ubi0_1': ('kernel', 83, 9309288),
+                'ubi0_2': ('rootfs', 200, 25305088)}
+    for name, (label, reserved, size) in expected.items():
+        item = volumes[name]
+        if (item['name'], item['type'], int(item['reserved_ebs']), int(item['data_bytes']),
+            int(item['corrupted']), int(item['upd_marker'])) != (label, 'static', reserved, size, 0, 0):
+            raise ValueError('Unexpected initial static volume')
+    if int(volumes['ubi0']['avail_eraseblocks']) != 85:
+        raise ValueError('Available LEBs changed; do not write')
+    mtd = sysfs_records(sections['mtd_fields'], '/sys/class/mtd/')
+    if int(mtd['mtd2']['flags'], 0) & 0x400 == 0:
+        raise ValueError('UBI backing MTD is not writable')
+    if any(int(item['corrected_bits']) != 0 for item in mtd.values()):
+        raise ValueError('Corrected ECC bits require review')
+    if state['payload_hashes']['ubi0_1'] != OLD_KERNEL_SHA or state['payload_hashes']['ubi0_0'] != LOADER_SHA:
+        raise ValueError('Active kernel or stock loader changed')
+    return plan
+
+
+def validate_after(before, after):
+    if before['payload_hashes'] != after['payload_hashes']:
+        raise ValueError('Payload changed during reservation growth')
+    if before['sections']['boot_and_mounts'] != after['sections']['boot_and_mounts']:
+        raise ValueError('Boot or mounts changed during stage A')
+    if before['sections']['mtd_fields'] != after['sections']['mtd_fields']:
+        raise ValueError('MTD geometry/flags/ECC changed during stage A')
+    old = sysfs_records(before['sections']['ubi'], '/sys/class/ubi/')
+    new = sysfs_records(after['sections']['ubi'], '/sys/class/ubi/')
+    expected = {key: dict(value) for key, value in old.items()}
+    expected['ubi0']['avail_eraseblocks'] = '53'
+    expected['ubi0_1']['reserved_ebs'] = '115'
+    if new != expected:
+        raise ValueError('Unexpected UBI state after resize')
+
+
+def save(path, data):
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(data, stream, indent=2)
+        stream.write('\n')
+
+
+def main():
+    output = ROOT / ('kernel-reserve-stage-a-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+    output.mkdir(exist_ok=False)
+    connection = paramiko.Transport(('<ADDRESS>', 22))
+    attempted = False
+    try:
+        connection.start_client(timeout=15)
+        key = connection.get_remote_server_key()
+        fingerprint = 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip('=')
+        if fingerprint != APPROVED:
+            raise ValueError('SSH key changed; no authentication')
+        connection.auth_none('root')
+        before = read_state(connection)
+        factory_output = receive(connection, 'sha256sum /tmp/tp_data/MT7986_EEPROM.bin /tmp/tp_data/default-mac').decode()
+        factory_hashes = {Path(name).name: digest for digest, name in re.findall(r'([0-9a-f]{64})\s+(\S+)', factory_output)}
+        manifest = json.loads((ROOT / 'preflash-private-local/factory-manifest.json').read_text())
+        factory_matches = all(factory_hashes.get(name) == manifest['source_hashes'][name]
+                              for name in ('MT7986_EEPROM.bin', 'default-mac'))
+        plan = validate_before(before, fingerprint, factory_matches)
+        backups = json.loads((ROOT / 'current-router-backup-20261009-011427/manifest.json').read_text())
+        saved = {item['name']: item['sha256'] for item in backups['files']}
+        for device, name in [('mtd0', 'mtd0-boot.bin'), ('mtd1', 'mtd1-u-boot-env.bin'),
+                             ('mtd3', 'mtd3-ubi1.bin'), ('mtd5', 'mtd5-tp_data.bin')]:
+            if before['payload_hashes'][device] != saved[name]:
+                raise ValueError('Boot-critical payload differs from saved backup')
+        save(output / 'before.json', {'fingerprint': fingerprint, 'state': before,
+                                      'plan': plan, 'authorized_scope': 'stage A reservation only',
+                                      'approved_command': COMMAND})
+        # Persist intent before the sole mutation, and never retry an uncertain result.
+        save(output / 'write-intent.json', {'command': COMMAND, 'no_reboot': True,
+                                           'no_payload_update': True, 'no_bootloader_write': True})
+        attempted = True
+        command_error = None
+        try:
+            command_output = receive(connection, COMMAND).decode()
+        except Exception as error:
+            command_output = None
+            command_error = str(error)
+        # Even a timeout/error can follow a successful write: inspect actual state.
+        after = read_state(connection)
+        save(output / 'after.json', {'state': after, 'command_output': command_output,
+                                     'command_error': command_error})
+        validate_after(before, after)
+        result = {'stage_a_verified': True, 'kernel_reserved_lebs': 115,
+                  'kernel_capacity_bytes': 14602240, 'available_lebs': 53,
+                  'all_seven_checked_payload_hashes_unchanged': True,
+                  'reboot': False, 'kernel_image_updated': False, 'bootloader_updated': False,
+                  'command_error': command_error, 'stages_b_c_authorized': False}
+        save(output / 'result.json', result)
+        print(json.dumps({'saved': str(output), **result}, indent=2))
+    except Exception as error:
+        save(output / 'STOP.json', {'error': str(error), 'write_attempted': attempted,
+                                   'no_automatic_retry_or_reboot': True})
+        raise
+    finally:
+        connection.close()
+
+
+if __name__ == '__main__':
+    main()

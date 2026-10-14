@@ -1,0 +1,129 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Separately approved diagnostic kernel update; never reboot or write BL2/FIP."""
+import base64
+import copy
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+import uuid
+
+import paramiko
+from backup_current_ssh import file_hash, receive
+from diagnostic_preflight_plan import sysfs_records
+from execute_kernel_reserve_stage_a import APPROVED, ROOT, OLD_KERNEL_SHA, read_state, save, validate_after
+
+DIAGNOSTIC = ROOT / 'reference-diagnostic-01/ax80-eu-luci-readonly-diagnostic-OFFLINE-CANDIDATE.itb'
+REFERENCE = ROOT.parents[1] / 'downloads/ax80-initramfs-verified-<DEVICE_ID>/openwrt-25.12.0-mediatek-filogic-tplink_archer-ax80-v1-eu-initramfs-kernel.bin'
+NEW_SHA = '<PRIVATE_OR_ARTIFACT_PIN>'
+NEW_SIZE = 9288608
+OLD_SIZE = 9309288
+STAGE_A = ROOT / 'kernel-reserve-stage-a-20261009-054013-6ebfb7a6'
+
+
+def validate_result(before, after):
+    expected_hashes = dict(before['payload_hashes'])
+    expected_hashes['ubi0_1'] = NEW_SHA
+    if after['payload_hashes'] != expected_hashes:
+        raise ValueError('Kernel hash mismatch or neighboring payload changed')
+    for name in ('boot_and_mounts', 'mtd_fields', 'identity'):
+        if before['sections'][name] != after['sections'][name]:
+            raise ValueError('Unexpected change in ' + name)
+    expected_ubi = copy.deepcopy(sysfs_records(before['sections']['ubi'], '/sys/class/ubi/'))
+    expected_ubi['ubi0_1']['data_bytes'] = str(NEW_SIZE)
+    if sysfs_records(after['sections']['ubi'], '/sys/class/ubi/') != expected_ubi:
+        raise ValueError('Unexpected volume geometry, markers or neighboring UBI change')
+
+
+def upload_ram(transport, source, target):
+    channel = transport.open_session(timeout=20)
+    channel.settimeout(120)
+    # Unique directory plus shell noclobber prevents overwriting an existing file.
+    channel.exec_command('set -C; cat > ' + target)
+    try:
+        with source.open('rb') as stream:
+            for block in iter(lambda: stream.read(65536), b''):
+                channel.sendall(block)
+        channel.shutdown_write()
+        output = channel.recv(4096)
+        error = channel.recv_stderr(4096)
+        if output or error or channel.recv_exit_status() != 0:
+            raise ValueError('RAM upload did not finish normally')
+    finally:
+        channel.close()
+
+
+def main():
+    for path, size, digest in [(DIAGNOSTIC, NEW_SIZE, NEW_SHA), (REFERENCE, OLD_SIZE, OLD_KERNEL_SHA)]:
+        if path.stat().st_size != size or file_hash(path) != digest:
+            raise ValueError('Local image pin mismatch: ' + str(path))
+    stage_a = json.loads((STAGE_A / 'result.json').read_text())
+    if not stage_a.get('stage_a_verified'):
+        raise ValueError('Stage A not verified')
+    original = json.loads((STAGE_A / 'before.json').read_text())['state']
+    label = time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]
+    output = ROOT / ('diagnostic-stage-b-' + label)
+    output.mkdir(exist_ok=False)
+    ram = '/tmp/ax80-stage-b-' + label
+    transport = paramiko.Transport(('<ADDRESS>', 22))
+    attempted = False
+    try:
+        transport.start_client(timeout=15)
+        fingerprint = 'SHA256:' + base64.b64encode(hashlib.sha256(transport.get_remote_server_key().asbytes()).digest()).decode().rstrip('=')
+        if fingerprint != APPROVED:
+            raise ValueError('SSH key changed; no authentication')
+        transport.auth_none('root')
+        before = read_state(transport)
+        validate_after(original, before)
+        memory = receive(transport, 'cat /proc/meminfo; df -Pk /tmp; command -v ubiupdatevol').decode()
+        available = re.search(r'^MemAvailabl<LOCAL_SOURCE_DIR>', memory, re.M)
+        df = next((line.split() for line in memory.splitlines() if line.strip().endswith(' /tmp')), None)
+        if not available or int(available[1]) < 65536 or not df or int(df[3]) < 65536:
+            raise ValueError('Insufficient verified RAM/tmp capacity')
+        if '/usr/sbin/ubiupdatevol' not in memory:
+            raise ValueError('ubiupdatevol not found')
+        save(output / 'before.json', {'state': before, 'fingerprint': fingerprint, 'memory': memory})
+        receive(transport, 'mkdir -m 700 ' + ram)
+        diagnostic_ram = ram + '/diagnostic.itb'
+        reference_ram = ram + '/official-reference.bin'
+        for source, target, size, digest in [(DIAGNOSTIC, diagnostic_ram, NEW_SIZE, NEW_SHA),
+                                             (REFERENCE, reference_ram, OLD_SIZE, OLD_KERNEL_SHA)]:
+            upload_ram(transport, source, target)
+            actual = receive(transport, 'wc -c < ' + target + '; sha256sum ' + target).decode().split()
+            if int(actual[0]) != size or actual[1] != digest:
+                raise ValueError('Uploaded image mismatch')
+        # Recheck immediately before the sole NAND payload update.
+        validate_after(original, read_state(transport))
+        command = 'ubiupdatevol /dev/ubi0_1 ' + diagnostic_ram
+        save(output / 'write-intent.json', {'command': command, 'authorized_scope': 'stage B diagnostic kernel only',
+                                           'reference_in_ram': reference_ram, 'reboot_authorized': False,
+                                           'bootloader_write_authorized': False})
+        attempted = True
+        command_error = None
+        try:
+            command_output = receive(transport, command).decode()
+        except Exception as error:
+            command_output = None
+            command_error = str(error)
+        after = read_state(transport)
+        save(output / 'after.json', {'state': after, 'command_output': command_output, 'command_error': command_error})
+        validate_result(before, after)
+        result = {'stage_b_verified': True, 'kernel_bytes': NEW_SIZE, 'kernel_sha256': NEW_SHA,
+                  'reserved_lebs': 115, 'corrupted': 0, 'upd_marker': 0,
+                  'six_neighbor_payload_hashes_unchanged': True, 'reference_in_ram': reference_ram,
+                  'reboot': False, 'bootloader_updated': False, 'stage_c_authorized': False,
+                  'command_error': command_error}
+        save(output / 'result.json', result)
+        print(json.dumps({'saved': str(output), **result}, indent=2))
+    except Exception as error:
+        save(output / 'STOP.json', {'error': str(error), 'write_attempted': attempted,
+                                   'no_automatic_retry_rollback_or_reboot': True})
+        raise
+    finally:
+        transport.close()
+
+
+if __name__ == '__main__':
+    main()

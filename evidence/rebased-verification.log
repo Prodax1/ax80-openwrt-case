@@ -1,0 +1,6 @@
+Command: wsl -d Ubuntu -u codexbuild -- env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 PATH=/usr/local/sbi<LOCAL_SOURCE_DIR>
+Exit code: 0
+PASS: 11 copied files, 6 profile images, UBI FIT hashes, BL2/FIP payloads, old baseline hashes.
+Package counts: tplink_archer-ax80-v1-eu=127, tplink_archer-ax80-v1-eu-ubi=120
+Evidence: evidence/build-verification-20261013T205059Z/
+This verifies an already completed build; make was not rerun.

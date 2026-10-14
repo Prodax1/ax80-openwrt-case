@@ -1,0 +1,266 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Build an offline LuCI diagnostic FIT from the exact booted reference."""
+import argparse
+import hashlib
+import json
+import lzma
+from pathlib import Path
+import shutil
+import struct
+import subprocess
+import tempfile
+
+from inspect_initrd_archive import parse
+from inspect_reference_fit import REFERENCE, REFERENCE_SHA, unpack_initrd, verify_fit
+from prepare_ram_probe import ROOT, TOOLS, ARGS, compatible_nodes, delete, get, nodes, props, run
+
+MODEL = 'TP-Link Archer AX80 v1 EU - read-only NAND diagnostic'
+MAP = [('boot', 0, 0x200000), ('u-boot-env', 0x200000, 0x100000),
+       ('ubi0', 0x300000, 0x3200000), ('ubi1', 0x3500000, 0x3200000),
+       ('userconfig', 0x6700000, 0x800000), ('tp_data', 0x6f00000, 0x400000),
+       ('mali_data', 0x7300000, 0x800000), ('diagnostic-tail', 0x7b00000, 0x500000)]
+DISABLED_HOOKS = ['lib/preinit/09_mount_cfg_part', 'lib/preinit/10_fix_eth_mac.sh',
+                  'lib/preinit/75_rootfs_prepare', 'lib/preinit/80_mount_root',
+                  'etc/init.d/bootcount']
+MUTATORS = {'mtd', 'sysupgrade', 'firstboot', 'jffs2reset', 'fw_setenv',
+            'ubiattach', 'ubidetach', 'ubiformat', 'ubimkvol', 'ubirmvol',
+            'ubiupdatevol', 'ubirename', 'nandwrite', 'flash_erase', 'flash_eraseall'}
+
+
+def rewrite_archive(data, replacements, removed):
+    """Retain untouched records verbatim, including modes and device metadata."""
+    entries = parse(data)
+    if not set(replacements) <= entries.keys() or not set(removed) <= entries.keys():
+        raise ValueError('Archive mutation references missing member')
+    result = bytearray()
+    position = 0
+    while True:
+        header = data[position:position + 110]
+        size = int(header[54:62], 16)
+        namesize = int(header[94:102], 16)
+        name_start = position + 110
+        name_end = name_start + namesize
+        name_raw = data[name_start:name_end]
+        name = str(Path(name_raw[:-1].decode()))
+        start = (name_end + 3) & ~3
+        end = (start + size + 3) & ~3
+        if name == 'TRAILER!!!':
+            result.extend(data[position:end])
+            break
+        if name not in removed:
+            if name in replacements:
+                payload = replacements[name]
+                if entries[name]['nlink'] != 1:
+                    raise ValueError('Cannot mutate a hardlinked member')
+                result.extend(header[:54] + f'{len(payload):08x}'.encode() + header[62:])
+                result.extend(name_raw)
+                result.extend(b'\0' * (-len(result) % 4))
+                result.extend(payload)
+                result.extend(b'\0' * (-len(result) % 4))
+            else:
+                result.extend(data[position:end])
+        position = end
+    result.extend(b'\0' * (-len(result) % 512))
+    parse(bytes(result))
+    return bytes(result)
+
+
+def patch_archive(data):
+    entries = parse(data)
+    stub = b'# Diagnostic image: persistent operations intentionally disabled.\n'
+    replacements = {name: stub for name in DISABLED_HOOKS}
+    boot = entries['etc/init.d/boot']['data']
+    old = b'\t[ -f /proc/mounts ] || /sbin/mount_root'
+    if boot.count(old) != 1:
+        raise ValueError('Unexpected boot mount_root implementation')
+    replacements['etc/init.d/boot'] = boot.replace(old, b'\t: # RAM diagnostic; no mount_root')
+    done = entries['etc/init.d/done']['data']
+    if done.count(b'\tmount_root done') != 1:
+        raise ValueError('Unexpected done mount_root implementation')
+    replacements['etc/init.d/done'] = done.replace(b'\tmount_root done', b'\t: # No persistent root finalization')
+    removed = {name for name in entries if Path(name).name in MUTATORS}
+    # No block hotplug/autoload path is included in this stock reference.
+    for name in entries:
+        if name.startswith('etc/hotplug.d/block/'):
+            replacements[name] = stub
+    packed = rewrite_archive(data, replacements, removed)
+    after = parse(packed)
+    for name in entries:
+        if name not in removed and name not in replacements:
+            if after[name] != entries[name]:
+                raise ValueError('Unexpected archive modification: ' + name)
+    luci = [name for name in entries if name.startswith(('www/luci-static/', 'usr/share/ucode/luci/', 'usr/share/luci/', 'www/cgi-bin/luci'))]
+    if len(luci) < 100 or any(after.get(name) != entries[name] for name in luci):
+        raise ValueError('LuCI preservation check failed')
+    if any(Path(name).name in MUTATORS for name in after):
+        raise ValueError('Persistent mutation tool retained')
+    return packed, {'modified_hooks': sorted(replacements), 'removed_tools': sorted(removed),
+                    'luci_files_preserved': len(luci), 'untouched_members_verified': True}
+
+
+def check_dtb(dtb):
+    if get(dtb, '/', 'model') != MODEL:
+        raise ValueError('Wrong diagnostic model')
+    if 'tplink,archer-ax80-v1-eu' not in get(dtb, '/', 'compatible').split():
+        raise ValueError('Wrong diagnostic board')
+    flashes = compatible_nodes(dtb, 'spi-nand')
+    if len(flashes) != 1:
+        raise ValueError('Unexpected NAND device count')
+    flash = flashes[0]
+    controller = flash.rsplit('/', 1)[0]
+    for node in (flash, controller):
+        if 'status' in props(dtb, node) and get(dtb, node, 'status') != 'okay':
+            raise ValueError('NAND disabled')
+    parent = flash + '/partitions'
+    actual = []
+    for child in run('fdtget', '-l', dtb, parent).splitlines():
+        node = parent + '/' + child
+        fields = props(dtb, node)
+        if 'read-only' not in fields:
+            raise ValueError('Writable NAND partition')
+        offset, size = [int(v, 16) for v in get(dtb, node, 'reg', 'x').split()]
+        actual.append((get(dtb, node, 'label'), offset, size))
+        if run('fdtget', '-l', dtb, node):
+            raise ValueError('Nested or overlapping NAND view')
+    if sorted(actual, key=lambda row: row[1]) != MAP:
+        raise ValueError('Wrong NAND diagnostic map')
+    for node in nodes(dtb):
+        if 'compatible' in props(dtb, node) and 'linux,ubi' in get(dtb, node, 'compatible').split():
+            raise ValueError('Automatic UBI attach retained')
+    chosen = props(dtb, '/chosen')
+    if 'rootdisk' in chosen or 'bootargs-append' in chosen:
+        raise ValueError('Persistent root selector retained')
+    for prop in ('bootargs', 'bootargs-override'):
+        if get(dtb, '/chosen', prop) != ARGS:
+            raise ValueError('Unsafe boot arguments')
+    wifi = compatible_nodes(dtb, 'mediatek,mt7986-wmac')
+    if len(wifi) != 1 or get(dtb, wifi[0], 'status') != 'disabled':
+        raise ValueError('Wi-Fi enabled before calibration verification')
+    for node in compatible_nodes(dtb, 'mediatek,eth-mac'):
+        if 'nvmem-cells' in props(dtb, node):
+            raise ValueError('Ethernet requires NAND attach')
+        mac = bytes(int(v, 16) for v in get(dtb, node, 'local-mac-address', 'bx').split())
+        if len(mac) != 6 or mac[0] & 1 or not any(mac):
+            raise ValueError('Invalid diagnostic MAC')
+    return {'map': MAP, 'all_partitions_read_only': True, 'autoattach_nodes': 0,
+            'old_map_preserved': True, 'tail_exposed_read_only': True, 'wifi_disabled': True}
+
+
+def prepare(output):
+    if hashlib.sha256(REFERENCE.read_bytes()).hexdigest() != REFERENCE_SHA:
+        raise ValueError('Reference SHA256 mismatch')
+    output.mkdir(exist_ok=False)
+    original = output / 'original'
+    original.mkdir()
+    before = verify_fit(REFERENCE, original)
+    for name in before:
+        shutil.copyfile(original / (name + '.bin'), output / (name + '.bin'))
+    kernel = lzma.decompress((original / 'kernel-1.bin').read_bytes())
+    if b'bootargs-override' not in kernel or kernel[56:60] != b'ARM\x64':
+        raise ValueError('Reference kernel override/header not verified')
+    archive, initrd_policy = patch_archive(unpack_initrd((original / 'initrd-1.bin').read_bytes()))
+    (output / 'initrd-1.bin').write_bytes(lzma.compress(archive, format=lzma.FORMAT_XZ,
+                                                    check=lzma.CHECK_CRC32, preset=6))
+    dtb = output / 'fdt-1.bin'
+    flash = compatible_nodes(dtb, 'spi-nand')[0]
+    parent = flash + '/partitions'
+    run('fdtput', '-r', dtb, parent)
+    run('fdtput', '-c', dtb, parent)
+    run('fdtput', '-t', 's', dtb, parent, 'compatible', 'fixed-partitions')
+    for prop in ('#address-cells', '#size-cells'):
+        run('fdtput', '-t', 'x', dtb, parent, prop, '1')
+    for label, offset, size in MAP:
+        node = parent + f'/partition@{offset:x}'
+        run('fdtput', '-c', dtb, node)
+        run('fdtput', '-t', 's', dtb, node, 'label', label)
+        run('fdtput', '-t', 'x', dtb, node, 'reg', f'{offset:x}', f'{size:x}')
+        run('fdtput', dtb, node, 'read-only')
+    for prop in ('rootdisk', 'bootargs-append'):
+        delete(dtb, '/chosen', prop)
+    for prop in ('bootargs', 'bootargs-override'):
+        run('fdtput', '-t', 's', dtb, '/chosen', prop, ARGS)
+    for node in compatible_nodes(dtb, 'mediatek,mt7986-wmac'):
+        run('fdtput', '-t', 's', dtb, node, 'status', 'disabled')
+    for node in compatible_nodes(dtb, 'mediatek,mt7986-wdt'):
+        run('fdtput', '-t', 's', dtb, node, 'status', 'disabled')
+    snapshot = ROOT / 'current-router-backup-20261009-011427'
+    manifest = json.loads((snapshot / 'manifest.json').read_text())
+    record = next(row for row in manifest['files'] if row['name'] == 'default-mac')
+    base = (snapshot / 'default-mac').read_bytes()
+    if len(base) != 6 or hashlib.sha256(base).hexdigest() != record['sha256']:
+        raise ValueError('Saved MAC verification failed')
+    for node in compatible_nodes(dtb, 'mediatek,eth-mac'):
+        index = int(get(dtb, node, 'reg', 'x'), 16)
+        if index not in (0, 1):
+            raise ValueError('Unexpected Ethernet index')
+        for prop in ('nvmem-cells', 'nvmem-cell-names'):
+            delete(dtb, node, prop)
+        mac = (int.from_bytes(base, 'big') + index).to_bytes(6, 'big')
+        for prop in ('local-mac-address', 'mac-address'):
+            run('fdtput', '-t', 'bx', dtb, node, prop, *[f'{v:02x}' for v in mac])
+    run('fdtput', '-t', 's', dtb, '/', 'model', MODEL)
+    policy = check_dtb(dtb)
+    sections = []
+    for name in before:
+        node = '/images/' + name
+        fields = [f'data = /incbin/("{name}.bin");']
+        for prop in ('description', 'type', 'arch', 'os', 'compression'):
+            if prop in props(REFERENCE, node):
+                fields.append(f'{prop} = {json.dumps(get(REFERENCE, node, prop))};')
+        for prop in ('load', 'entry'):
+            if prop in props(REFERENCE, node):
+                values = get(REFERENCE, node, prop, 'x').split()
+                fields.append(f'{prop} = <' + ' '.join('0x' + v for v in values) + '>;')
+        fields.extend(f'hash-{i} {{ algo = "{algo}"; }};' for i, algo in enumerate(['crc32', 'sha1', 'sha256'], 1))
+        sections.append(name + ' { ' + ' '.join(fields) + ' };')
+    its = '/dts-v1/; / { description = "AX80 EU LuCI read-only diagnostic - OFFLINE CANDIDATE"; #address-cells = <1>; images { '
+    its += ' '.join(sections) + ' }; configurations { default = "config-1"; config-1 { '
+    its += 'kernel = "kernel-1"; ramdisk = "initrd-1"; fdt = "fdt-1"; }; }; };\n'
+    (output / 'diagnostic.its').write_text(its)
+    image = output / 'ax80-eu-luci-readonly-diagnostic-OFFLINE-CANDIDATE.itb'
+    subprocess.run([str(TOOLS / 'mkimage'), '-f', 'diagnostic.its', image.name], cwd=output,
+                   check=True, stdout=subprocess.DEVNULL)
+    verified = output / 'verified'
+    verified.mkdir()
+    after = verify_fit(image, verified)
+    if before['kernel-1']['sha256'] != after['kernel-1']['sha256']:
+        raise ValueError('Kernel unexpectedly changed')
+    check_dtb(verified / 'fdt-1.bin')
+    if unpack_initrd((verified / 'initrd-1.bin').read_bytes()) != archive:
+        raise ValueError('Repacked initrd mismatch')
+    capacity = 83 * 126976
+    if image.stat().st_size > capacity:
+        raise ValueError('Diagnostic image exceeds saved kernel volume capacity')
+    image_size = struct.unpack_from('<Q', kernel, 16)[0]
+    load = int(get(image, '/images/kernel-1', 'load', 'x'), 16)
+    if 0x46000000 + image.stat().st_size > load:
+        raise ValueError('FIT overlaps kernel destination')
+    report = {'file': image.name, 'bytes': image.stat().st_size,
+              'sha256': hashlib.sha256(image.read_bytes()).hexdigest(),
+              'reference_sha256': REFERENCE_SHA, 'kernel_unchanged': True,
+              'payloads': after, 'dtb_policy': policy, 'initrd_policy': initrd_policy,
+              'saved_kernel_capacity': capacity, 'saved_kernel_margin': capacity - image.stat().st_size,
+              'fits_existing_volume_offline': True,
+              'meets_general_5MiB_margin': capacity - image.stat().st_size >= 5 * 1024 * 1024,
+              'kernel_range': [hex(load), hex(load + image_size)],
+              'hardware_boot_verified': False, 'ready_to_flash': False,
+              'limitations': ['No stock bootloader acceptance test of modified FIT',
+                              'Bootargs override present in kernel; hardware result not tested',
+                              'All NAND partitions are read-only; NOT a migration installer',
+                              'New tail has not been checked for ECC/bad blocks',
+                              'Live volume identity/capacity and required margin need approval',
+                              'LuCI retained but flash/reset tools intentionally unavailable']}
+    (output / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')
+    (output / 'diagnostic.dts').write_text(run('dtc', '-I', 'dtb', '-O', 'dts', dtb) + '\n')
+    (output / 'DO-NOT-FLASH-WITHOUT-APPROVAL.txt').write_text(
+        'OFFLINE diagnostic candidate. No hardware verification or flashing authorization.\n'
+        'Not a sysupgrade image, not a U-Boot installer. NAND is read-only.\n')
+    print(json.dumps({key: report[key] for key in ('file', 'bytes', 'sha256', 'kernel_unchanged',
+                      'saved_kernel_margin', 'ready_to_flash')}, indent=2))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('output', type=Path)
+    prepare(parser.parse_args().output.resolve())

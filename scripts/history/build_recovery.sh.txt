@@ -1,0 +1,26 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+ROOT=/local/ax80/build
+TREE="$ROOT/recovery-02"
+test "$(id -u)" != 0
+test "$(realpath "$TREE")" = "$TREE"
+cd "$TREE"
+test "$(git rev-parse HEAD)" = d4ebffe538ab94d9b5a604f4bba28325f38ed3d8
+grep -Fx CONFIG_TARGET_ROOTFS_INITRAMFS=y .config
+grep -Fx CONFIG_TARGET_mediatek_filogic_DEVICE_tplink_archer-ax80-v1-eu-ubi=y .config
+test ! -d files
+make defconfig > "$ROOT/recovery-02-prebuild-config.log" 2>&1
+if grep -E 'error:|recursive dependency detected' "$ROOT/recovery-02-prebuild-config.log"; then
+    exit 1
+fi
+for feed in packages luci routing; do
+    printf '%s %s\n' "$feed" "$(git -C "feeds/$feed" rev-parse HEAD)"
+done > "$ROOT/recovery-02-feeds.lock"
+cp .config "$ROOT/recovery-02.config.resolved"
+./scripts/diffconfig.sh > "$ROOT/recovery-02.config.diff"
+make download -j4 V=s > "$ROOT/recovery-02-download.log" 2>&1
+make -j6 V=s > "$ROOT/recovery-02-build.log" 2>&1
+printf '%s\n' 'RESEARCH RECOVERY BUILD COMPLETED; HARDWARE UNTESTED; DO NOT FLASH'

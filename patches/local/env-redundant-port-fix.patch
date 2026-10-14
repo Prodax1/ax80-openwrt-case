@@ -1,0 +1,11 @@
+--- a/configs/mt7986_tplink_archer-ax80-v1-eu_defconfig
++++ b/configs/mt7986_tplink_archer-ax80-v1-eu_defconfig
+@@ -59,7 +59,7 @@
+ CONFIG_OF_EMBED=y
+ CONFIG_ENV_OVERWRITE=y
+ CONFIG_ENV_IS_IN_UBI=y
+-CONFIG_SYS_REDUNDAND_ENVIRONMENT=y
++CONFIG_ENV_REDUNDANT=y
+ CONFIG_ENV_UBI_PART="ubi"
+ CONFIG_ENV_UBI_VOLUME="ubootenv"
+ CONFIG_ENV_UBI_VOLUME_REDUND="ubootenv2"

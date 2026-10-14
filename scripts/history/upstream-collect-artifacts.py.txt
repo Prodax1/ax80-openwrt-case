@@ -1,0 +1,82 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Collect only public, freshly built AX80 images and compare curated old images."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+repo = Path('/local/ax80/build/upstream-pr-20261013/openwrt')
+out = Path('/local/ax80/upstream-pr')
+old = out.parent / 'build-20261008-d4ebffe5'
+target = repo / 'bin/targets/mediatek/filogic'
+destination = out / 'artifacts'
+destination.mkdir(exist_ok=True)
+files = sorted(file for file in target.iterdir() if file.is_file() and
+               ('tplink_archer-ax80-v1-eu' in file.name or file.name in
+                ('openwrt-mediatek-filogic.manifest', 'profiles.json', 'config.buildinfo', 'feeds.buildinfo', 'version.buildinfo')))
+required = ('-ubi-preloader.bin', '-ubi-bl31-uboot.fip', '-ubi-initramfs-recovery.itb', '-ubi-squashfs-sysupgrade.itb', '-eu-squashfs-sysupgrade.bin')
+assert all(any(file.name.endswith(suffix) for file in files) for suffix in required), 'Missing required AX80 artifact'
+records = []
+for file in files:
+    assert file.stat().st_size > 0
+    digest = hashlib.sha256(file.read_bytes()).hexdigest()
+    copied = destination / file.name
+    assert copied.resolve().parent == destination.resolve() and copied.resolve() != file.resolve()
+    if copied.exists():
+        assert hashlib.sha256(copied.read_bytes()).hexdigest() == digest, 'Refuse to overwrite different artifact content'
+    else:
+        shutil.copyfile(file, copied)
+    assert hashlib.sha256(copied.read_bytes()).hexdigest() == digest
+    records.append({'file': file.name, 'bytes': file.stat().st_size, 'sha256': digest})
+(out / 'evidence/artifacts.json').write_text(json.dumps(records, indent=2) + '\n')
+(destination / 'SHA256SUMS').write_text(''.join(f"{r['sha256']}  {r['file']}\n" for r in records))
+(destination / 'BUILD-TESTED-ONLY.txt').write_text('Build-tested only. No hardware boot test. Not authorized for flashing.\n')
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('existing_fit_validator', old / 'verify_fit.py')
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+tools = repo / 'staging_dir/host/bin'
+dumpimages = list((repo / 'build_dir/host').glob('u-boot-v*/tools/dumpimage'))
+assert len(dumpimages) == 1
+dumpimage = dumpimages[0]
+fdtget = shutil.which('fdtget')
+assert fdtget is not None
+(out / 'evidence/validation-tools.json').write_text(json.dumps({
+    'dumpimage': str(dumpimage), 'fdtget': fdtget, 'fiptool': str(tools / 'fiptool'),
+}, indent=2) + '\n')
+for file in files:
+    if file.name.endswith(('-ubi-initramfs-recovery.itb', '-ubi-squashfs-sysupgrade.itb')):
+        kind = 'recovery' if 'initramfs' in file.name else 'custom'
+        result = validator.validate(file, dumpimage, Path(fdtget), kind)
+        (out / 'evidence' / ('fit-' + kind + '.json')).write_text(json.dumps(result, indent=2) + '\n')
+    elif 'initramfs' in file.name:
+        text = subprocess.check_output([str(dumpimage), '-l', str(file)], text=True)
+        (out / 'evidence/stock-initramfs-listing.txt').write_text(text)
+    elif file.name.endswith('.fip'):
+        text = subprocess.check_output([str(tools / 'fiptool'), 'info', str(file)], text=True)
+        (out / 'evidence/fip-info.txt').write_text(text)
+
+baseline = []
+for folder in ('completed-images-20261008T215302Z-179979', 'donor-rebuild-20261009T143346Z-338', 'artifacts-research-only', 'artifacts-candidate04-research-only'):
+    for file in sorted((old / folder).rglob('*')):
+        if file.is_file() and file.suffix in ('.itb', '.fip', '.img', '.bin', '.manifest'):
+            baseline.append({'file': str(file.relative_to(old)), 'bytes': file.stat().st_size,
+                             'sha256': hashlib.sha256(file.read_bytes()).hexdigest()})
+(out / 'evidence/baseline-artifacts.json').write_text(json.dumps(baseline, indent=2) + '\n')
+
+new_manifest = target / 'openwrt-mediatek-filogic.manifest'
+new_packages = set(line.split(' - ')[0] for line in new_manifest.read_text().splitlines())
+old_manifest = old / 'completed-images-20261008T215302Z-179979/custom-01-openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi.manifest'
+old_packages = set(line.split(' - ')[0] for line in old_manifest.read_text().splitlines())
+(out / 'evidence/package-comparison.json').write_text(json.dumps({
+    'old_count': len(old_packages), 'new_count': len(new_packages),
+    'new_manifest_scope': 'Common build manifest (both selected profiles); profile-specific additions are in profiles.json',
+    'only_in_old_custom_build': sorted(old_packages-new_packages),
+    'only_in_new_build': sorted(new_packages-old_packages),
+}, indent=2) + '\n')
+print(json.dumps(records, indent=2))

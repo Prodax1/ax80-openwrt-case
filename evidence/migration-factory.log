@@ -1,0 +1,5 @@
+# Historical factory write/readback excerpt. Addresses, RAM directory and device-specific hashes removed.
+$ mtd write <RAM_DIR>/factory.bin /dev/mtd1
+exit_code=0
+Writing from /tmp/ax80-staging-20261009-121159-78cef226/factory.bin to /dev/mtd1 ...  [ ][e][w][e][w][e][w][e][w][e][w][e][w][e][w][e][w]
+[repetitive progress and unrelated output omitted]

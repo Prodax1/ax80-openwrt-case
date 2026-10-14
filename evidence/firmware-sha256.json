@@ -1,0 +1,110 @@
+[
+  {
+    "group": "installed-era",
+    "file": "completed-images-20261008T215302Z-179979/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-initramfs-recovery.itb",
+    "bytes": 27721728,
+    "sha256": "df4f7710cf6e7def345dfb6b00de83e6faf5883c42c8dccb370e1967e130a96f"
+  },
+  {
+    "group": "installed-era",
+    "file": "completed-images-20261008T215302Z-179979/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-squashfs-sysupgrade.itb",
+    "bytes": 52789539,
+    "sha256": "4885a5ffda4d4904fb76c7b810fce0eac8d7b8e9f466963215a119f833fffc00"
+  },
+  {
+    "group": "later-unbooted",
+    "file": "donor-rebuild-20261009T143346Z-338/production/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-squashfs-sysupgrade.itb",
+    "bytes": 53121315,
+    "sha256": "db595ed2e4df23faedacb89286e6a06f53ed020b466e3bdcfe26b79cbfa1a58f"
+  },
+  {
+    "group": "later-unbooted",
+    "file": "donor-rebuild-20261009T143346Z-338/recovery/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-initramfs-recovery.itb",
+    "bytes": 30146560,
+    "sha256": "873cb5757e1866bcff7b3fc62a3700c1a4d49c90947e330215afed585d8e9be2"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-research-only/bl2.img",
+    "bytes": 156247,
+    "sha256": "059452a3d02b9d010bc99cebf92bccce2e360ef34020650ff2308393ea19fe03"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-research-only/bl31.bin",
+    "bytes": 33452,
+    "sha256": "659364afaa54b5e6e737a2a54fd8dd808e43d5dd77ddd9c866eca915239f37cd"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-research-only/research-bl31-uboot.fip",
+    "bytes": 1002804,
+    "sha256": "871abd7fdc0f36916a1aaa6e8bf6c8e4f56efca80fc316b4bbb87c30993dc7b1"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-research-only/u-boot.bin",
+    "bytes": 969216,
+    "sha256": "26ff526bcdeb9d0c9ced30f0b9addb45572e6b011db522c3811bad9a094c377c"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-candidate04-research-only/bl2.img",
+    "bytes": 156247,
+    "sha256": "5c01eb74ef38218d69256cd3a2098bc5ca49ef5471e6aad91f4f43b25ad92cfa"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-candidate04-research-only/bl31.bin",
+    "bytes": 33452,
+    "sha256": "744f716332e0f35b10d21cb4ebbc3869b67711954e6fbda97193e1345747e20a"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-candidate04-research-only/research-bl31-uboot.fip",
+    "bytes": 1004628,
+    "sha256": "40a7887876b300d534a57ea6ae71692d02fd6e49ea6536d78807b7bffa5be5f8"
+  },
+  {
+    "group": "research-bootchain",
+    "file": "artifacts-candidate04-research-only/u-boot.bin",
+    "bytes": 970960,
+    "sha256": "f92e7a4f3311c82d7dbd16bdfbb9e6e0642be387908c0e08130199045225104a"
+  },
+  {
+    "group": "rebased-build-only",
+    "file": "upstream-pr/artifacts/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-initramfs-kernel.bin",
+    "bytes": 9365288,
+    "sha256": "3da3a6bdaeaf3069585086159f9de3e5de5e504188ee5f734acffca88aab1f92"
+  },
+  {
+    "group": "rebased-build-only",
+    "file": "upstream-pr/artifacts/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-squashfs-sysupgrade.bin",
+    "bytes": 10045731,
+    "sha256": "cc93aefaeb15e634cdd986c975f14df16bce2688c1bc566f214e979dfc33f0a5"
+  },
+  {
+    "group": "rebased-build-only",
+    "file": "upstream-pr/artifacts/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-bl31-uboot.fip",
+    "bytes": 1023188,
+    "sha256": "b04eb76ed51f2e2865974f741f29ace0a61299395dea001fb23dcaba6a93e831"
+  },
+  {
+    "group": "rebased-build-only",
+    "file": "upstream-pr/artifacts/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-initramfs-recovery.itb",
+    "bytes": 9240576,
+    "sha256": "c68abfea90693006efbb70b0d6a7e444a5ca94825b3cbf9fde5f252a01fbaaee"
+  },
+  {
+    "group": "rebased-build-only",
+    "file": "upstream-pr/artifacts/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-preloader.bin",
+    "bytes": 156247,
+    "sha256": "1d0ffa78db92a790f7c2923a5e7793537f8da4c45c0b96ff883d6d2fcba9fc06"
+  },
+  {
+    "group": "rebased-build-only",
+    "file": "upstream-pr/artifacts/openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-squashfs-sysupgrade.itb",
+    "bytes": 11612459,
+    "sha256": "6fc1984cf1be8a041d8087c59193403791005b9f45433751514bb5897cb18d6d"
+  }
+]

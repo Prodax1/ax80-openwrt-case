@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.bin
+*.itb
+*.fip
+*.img
+*.ubi
+*.tgz
+*.tar
+*.tar.gz
+*.key
+.env

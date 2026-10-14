@@ -1,0 +1,30 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+ROOT=/local/ax80/build
+TREE="$ROOT/custom-01"
+INPUT='/local/ax80/ax80-build-20261008-d4ebffe5'
+RUN=$(date -u +%Y%m%dT%H%M%SZ)-$$
+LOG="$ROOT/custom-build-$RUN"
+test "$(id -u)" != 0
+test "$(realpath "$TREE")" = "$TREE"
+cd "$TREE"
+test "$(stat -c %s scripts/config/conf)" -gt 10000
+make defconfig > "$LOG-config.log" 2>&1
+if grep -E 'error:|recursive dependency detected' "$LOG-config.log"; then exit 1; fi
+python3 "$INPUT/configure_custom.py" "$TREE" --check
+python3 "$INPUT/verify_custom_overlay.py"
+cp .config "$LOG.config.resolved"
+./scripts/diffconfig.sh > "$LOG.config.diff"
+if [ -e dl ]; then
+    test "$(realpath dl)" = "$ROOT/recovery-02/dl"
+else
+    ln -s "$ROOT/recovery-02/dl" dl
+fi
+sync
+make download -j3 V=s > "$LOG-download.log" 2>&1
+make -j3 V=s > "$LOG-compile.log" 2>&1
+sync
+printf 'CUSTOM RESEARCH BUILD COMPLETED; HARDWARE UNTESTED; DO NOT FLASH. Logs: %s\n' "$LOG"

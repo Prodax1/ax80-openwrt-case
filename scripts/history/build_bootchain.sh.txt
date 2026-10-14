@@ -1,0 +1,54 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+#!/usr/bin/env bash
+# Compile a research candidate only. No router access or flashing commands.
+set -euo pipefail
+export LC_ALL=C
+recipe_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+src=$(realpath "${1:?Pass the pinned OpenWrt source directory}")
+out=$(realpath -m "${2:?Pass a new Linux output directory}")
+test "$(git -C "$src" rev-parse HEAD)" = d4ebffe538ab94d9b5a604f4bba28325f38ed3d8
+test ! -e "$out"
+case "$out" in /local/ax80/build/*) ;; *) echo 'Output must be inside the isolated Linux build folder' >&2; exit 1;; esac
+mkdir -p "$out"
+cd "$out"
+curl --fail --location --retry 2 --max-time 180 \
+  http<LOCAL_SOURCE_DIR>
+printf '%s  %s\n' b60d5865cefdbc75da8da4156c56c458e00de75a49b80c1a2e58a96e30ad0d54 u-boot-2026.01.tar.bz2 | sha256sum -c -
+tar -xjf u-boot-2026.01.tar.bz2
+for p in "$src"/package/boot/uboot-mediatek/patches/*.patch; do
+  echo "APPLY $(basename "$p")"
+  patch --batch --forward -p1 -d u-boot-2026.01 < "$p"
+done
+patch --batch --forward -p1 -d u-boot-2026.01 < "$recipe_dir/env-redundant-port-fix.patch"
+patch --batch --forward -p1 -d u-boot-2026.01 < "$recipe_dir/hardened-env.patch"
+make -C u-boot-2026.01 CROSS_COMPILE=aarch64-linux-gnu- mt7986_tplink_archer-ax80-v1-eu_defconfig
+u-boot-2026.01/scripts/config --file u-boot-2026.01/.config \
+  --disable TOOLS_KWBIMAGE --disable TOOLS_LIBCRYPTO --disable TOOLS_MKEFICAPSULE \
+  --enable ENV_REDUNDANT --set-str ENV_UBI_VOLUME_REDUND ubootenv2
+make -C u-boot-2026.01 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+grep -Fxq 'CONFIG_ENV_REDUNDANT=y' u-boot-2026.01/.config
+grep -Fxq 'CONFIG_ENV_UBI_VOLUME_REDUND="ubootenv2"' u-boot-2026.01/.config
+grep -Fxq 'CONFIG_ENV_SIZE=0x1f000' u-boot-2026.01/.config
+make -C u-boot-2026.01 CROSS_COMPILE=aarch64-linux-gnu- -j8 u-boot.bin
+file u-boot-2026.01/u-boot
+aarch64-linux-gnu-readelf -h u-boot-2026.01/u-boot
+git clone --no-checkout --depth 1 http<LOCAL_SOURCE_DIR>
+git -C tfa fetch --depth 1 origin e06f258664198a901ff1c7c0c87802a115179451
+git -C tfa checkout --detach e06f258664198a901ff1c7c0c87802a115179451
+for p in "$src"/package/boot/arm-trusted-firmware-mediatek/patches/*.patch; do
+  patch --batch --forward -p1 -d tfa < "$p"
+done
+make -C tfa CROSS_COMPILE=aarch64-linux-gnu- PLAT=mt7986 \
+  BOOT_DEVICE=spim-nand USE_MKIMAGE=1 MKIMAGE="$out/u-boot-2026.01/tools/mkimage" \
+  BOARD_BGA=1 HAVE_DRAM_OBJ_FILE=yes UBI=1 OVERRIDE_UBI_START_ADDR=0x200000 -j8 all
+make -C tfa PLAT=mt7986 BOOT_DEVICE=spim-nand BOARD_BGA=1 \
+  HAVE_DRAM_OBJ_FILE=yes UBI=1 OVERRIDE_UBI_START_ADDR=0x200000 fiptool
+tfa/build/mt7986/release/tools/fiptool/fiptool create --soc-fw tfa/build/mt7986/release/bl31.bin \
+  --nt-fw u-boot-2026.01/u-boot.bin research-bl31-uboot.fip
+tfa/build/mt7986/release/tools/fiptool/fiptool info research-bl31-uboot.fip
+stat -c '%n %s bytes' tfa/build/mt7986/release/bl2.img \
+  tfa/build/mt7986/release/bl31.bin u-boot-2026.01/u-boot.bin research-bl31-uboot.fip
+sha256sum tfa/build/mt7986/release/bl2.img tfa/build/mt7986/release/bl31.bin \
+  u-boot-2026.01/u-boot.bin research-bl31-uboot.fip
+echo 'RESEARCH BUILD COMPLETE; NOT APPROVED FOR FLASHING'

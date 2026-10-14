@@ -1,0 +1,2 @@
+# Exact diagnostic lines selected from the failed build.
+bash: -c: line 1: syntax error near unexpected token `('

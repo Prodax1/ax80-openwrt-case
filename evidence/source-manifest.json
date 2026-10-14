@@ -1,0 +1,294 @@
+[
+  {
+    "source": "build-20261008-d4ebffe5/env-redundant-port-fix.patch",
+    "destination": "patches/local/env-redundant-port-fix.patch",
+    "source_sha256": "3880d3e3e3c718bce1b496980ed8f4a908a9ff6ba891fdcfd60a933daac820b9",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/hardened-env.patch",
+    "destination": "patches/local/hardened-env.patch",
+    "source_sha256": "d10d3791f2b9cd18a132fe43874816801eb499b2abb49a33201ed46ec3eb2f48",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/ram-uboot-no-nand.patch",
+    "destination": "patches/local/ram-uboot-no-nand.patch",
+    "source_sha256": "ecd02c23064024faa396687934e41e375d69ed5f2d62870913673a080e1ab3d2",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/recovery-no-bootloader.patch",
+    "destination": "patches/local/recovery-no-bootloader.patch",
+    "source_sha256": "adaffe41e22d55821a89a7a35d96a4974a80858f3502e2a458d9c0e7ce46abff",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/awg-crypto-select.patch",
+    "destination": "patches/local/awg-crypto-select.patch",
+    "source_sha256": "99f612ce66e19a71074f4f7339cef3939db7d029c9d57e8e801e0429b005394d",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/patches/pr21640-original.diff",
+    "destination": "patches/upstream/pr21640-original.diff",
+    "source_sha256": "1957ef5e8a6bee19468f0670109b0bc907c8c147e1c1c9f3157ea65104f24e51",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/patches/ax80-eu-ubi-rebased.diff",
+    "destination": "patches/upstream/ax80-eu-ubi-rebased.diff",
+    "source_sha256": "1db652512c6136944fe0e8952a6f36e0fd4ce26716a3f846593ddb5a404948ed",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/build_bootchain.sh",
+    "destination": "scripts/history/build_bootchain.sh.txt",
+    "source_sha256": "b8045273b06be79268f5854e23ebf3277c0571f9ffd7c4664a22d9f7da9187cf",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/build_custom.sh",
+    "destination": "scripts/history/build_custom.sh.txt",
+    "source_sha256": "0141abb68cb9a21881b0cc330e4adb372b0003a884894de55ffc86de4ea1c919",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/build_recovery.sh",
+    "destination": "scripts/history/build_recovery.sh.txt",
+    "source_sha256": "1a9229fb6a13ab2c46bec40e9841b8c84f431d49eb655c480855de88ef9b43a6",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/prepare_factory.py",
+    "destination": "scripts/history/prepare_factory.py.txt",
+    "source_sha256": "944b63492f5173fd0868466ba2a6a46ea37844896a9ff9abd8980f3eb3ddabb1",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/prepare_seeded_env_ubi.py",
+    "destination": "scripts/history/prepare_seeded_env_ubi.py.txt",
+    "source_sha256": "344b35db65f9f2c01cf7f964aa53fe811c6ad077fcc5777a8938ee4fc92d1ba3",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/execute_approved_phase.py",
+    "destination": "scripts/history/execute_approved_phase.py.txt",
+    "source_sha256": "cae8effcf435bf4f43f63fa0ea366a786d1f5280fc11cb00f86e611f86639f11",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/execute_stock_to_reference.py",
+    "destination": "scripts/history/execute_stock_to_reference.py.txt",
+    "source_sha256": "471c8a97814f6185577104eb48b396696cbac58db5a3cf36fb50935bc4c221e9",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/execute_reference_to_migration.py",
+    "destination": "scripts/history/execute_reference_to_migration.py.txt",
+    "source_sha256": "08b4d241abec7d92f02c61c66ac4767ee507395ef323477e1389d584748c899e",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/execute_kernel_reserve_stage_a.py",
+    "destination": "scripts/history/execute_kernel_reserve_stage_a.py.txt",
+    "source_sha256": "16057d542b485f90250aca6ed5c322acd0d123ace7923523761ceb363d299ca0",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/execute_diagnostic_stage_b.py",
+    "destination": "scripts/history/execute_diagnostic_stage_b.py.txt",
+    "source_sha256": "a6cd4245b6dba52d3e083619f8daf0647d61471ded66d245abea700bd0adc6a2",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/prepare_ubi_offline_candidate.py",
+    "destination": "scripts/history/prepare_ubi_offline_candidate.py.txt",
+    "source_sha256": "2b1139d48554891dfcabbe3f1574d9c3c4523e5ae4d44df4f7019d9a10436751",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/prepare_reference_diagnostic.py",
+    "destination": "scripts/history/prepare_reference_diagnostic.py.txt",
+    "source_sha256": "13ccbeb7b38c48bcbdd88fc18992c587544cc427643bab35c9e4d333705fc48b",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/prepare_reference_migration.py",
+    "destination": "scripts/history/prepare_reference_migration.py.txt",
+    "source_sha256": "2b3e9d36ce1d8964b422c44ba3c7a3031b3744eba420cfe7e1ff497ab14e3420",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/fix_envtools_config.py",
+    "destination": "scripts/history/fix_envtools_config.py.txt",
+    "source_sha256": "03d8d65c76c3578419aca14ca0a46c32dc3f5808532af32a92f165134a4c089f",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "upstream-pr/scripts/build.sh",
+    "destination": "scripts/history/upstream-build.sh.txt",
+    "source_sha256": "fa8ce88b707d0edf003275599c262547aa03f0e5cfdccdbaf2b4c46563d22dfb",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "upstream-pr/scripts/resume-build.sh",
+    "destination": "scripts/history/upstream-resume-build.sh.txt",
+    "source_sha256": "2a6176a4fc3df550fc7d8b6397519bfcffc2101b84d66fb5600d0299a9fd4014",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "upstream-pr/scripts/resolve-conflict.py",
+    "destination": "scripts/history/upstream-resolve-conflict.py.txt",
+    "source_sha256": "c99ed417854ff854973a5ddc05034e5ddb6270592753dddd5a1103def19f6aad",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "upstream-pr/scripts/collect-artifacts.py",
+    "destination": "scripts/history/upstream-collect-artifacts.py.txt",
+    "source_sha256": "20c758f8aac012bfec111a4f23db18383f6289a30fa01e7d7cc882e43cdac132",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "upstream-pr/scripts/verify-completed-build.py",
+    "destination": "scripts/history/upstream-verify-completed-build.py.txt",
+    "source_sha256": "35f7dd1aaf8b81e0ed3145481e27f4d14ea09bc5b7c74872a6d9ad55d6ade85e",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "docs/ax80-enable-telnet.py",
+    "destination": "scripts/history/ax80-enable-telnet.py.txt",
+    "transformation": "historical sanitized archive; credential-related lines removed"
+  },
+  {
+    "source": "docs/ax80-telnet-backup.py",
+    "destination": "scripts/history/ax80-telnet-backup.py.txt",
+    "transformation": "historical sanitized archive; credential-related lines removed"
+  },
+  {
+    "source": "docs/ax80-verify-backups.py",
+    "destination": "scripts/history/ax80-verify-backups.py.txt",
+    "source_sha256": "0b069a8cbcd4609ba81fb46fe7e52e49221d495124f627d73998b97f38ecea77",
+    "transformation": "historical sanitized archive"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/completed-images-20261008T215302Z-179979/custom-01.config",
+    "destination": "configs/installed-era/custom-01.config",
+    "source_sha256": "bcee6b8f4df2a96bcd09f7f3a682f64e09833fcb87991e8a0e3b41df2a9c6200",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/completed-images-20261008T215302Z-179979/custom-01.config.diff",
+    "destination": "configs/installed-era/custom-01.config.diff",
+    "source_sha256": "5a5f81e1c9348f9e7364dbec433b83bd03a2cad44940a01a3bda567b8e477733",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/completed-images-20261008T215302Z-179979/recovery-02.config",
+    "destination": "configs/installed-era/recovery-02.config",
+    "source_sha256": "ff13e9a31c954bf5000148d922b4eb83cc8c8272adf2a2f5c62cfdafcd62852f",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/completed-images-20261008T215302Z-179979/recovery-02.config.diff",
+    "destination": "configs/installed-era/recovery-02.config.diff",
+    "source_sha256": "836f700c340505b051eefa0c7189e8f8fbb0e2905123920f7c79e59abc063734",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/build.config",
+    "destination": "configs/rebased/build.config",
+    "source_sha256": "62cb18715209eb035bc6f021d0ef9f60ef72ac2c2cb9b5cecf1023cf247453a5",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/build.config.diff",
+    "destination": "configs/rebased/diffconfig",
+    "source_sha256": "7c5ba60505c6469f028010644b635fcd14538152eaed637a6cf6f5c2b7af03de",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/artifacts/feeds.buildinfo",
+    "destination": "configs/rebased/feeds.buildinfo",
+    "source_sha256": "fff7167be2ef93bdf0c38439c19730236f96899576bfeb4dff7c602b071ebf4b",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/uboot-env-config.txt",
+    "destination": "evidence/rebased-uboot-env.txt",
+    "source_sha256": "c18a89815fb396556f0af3b155aeb322982a61dfe09bc08c2c981e9dd0154a65",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/build-result.txt",
+    "destination": "evidence/rebased-build-result.txt",
+    "source_sha256": "f7cb294ac09eeaaa0f66f936722c09c4584cdf7c9d03f576af0ec171658f527d",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/platform-resolution.diff",
+    "destination": "evidence/platform-resolution.diff",
+    "source_sha256": "5ed32e9e49147cfa0ed87dbe3ee6a3e449e4495a10004e448af3c7a289c47716",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/range-diff.txt",
+    "destination": "evidence/range-diff.txt",
+    "source_sha256": "5760652f327e2615503f4ee6a781f24e0d39141a72d7561f66e5e704e97054bb",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/build-verification-20261013T205059Z/result.json",
+    "destination": "evidence/rebased-verification.json",
+    "source_sha256": "855c7d818d4cfdf5267fe01ac96445eac401d4fe278b2addc8782d56b75b9050",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/evidence/fip-info.txt",
+    "destination": "evidence/rebased-fip.txt",
+    "source_sha256": "6c7fe673b7d0b714741277ad7dc4fb08b05e08a6407ba77976767ae026d8fef8",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "upstream-pr/logs/verify-completed-build-20261013T205059Z.log",
+    "destination": "evidence/rebased-verification.log",
+    "source_sha256": "4487b294b9b67ecd872823ea57067d20f7509a718f1c17325ca0fe6b7dbe4ef3",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/uboot-candidate04.config",
+    "destination": "configs/installed-era/uboot-candidate04.config",
+    "source_sha256": "e7f4b7219c96a29a3628d07182ca7707ce518cea591684a474a27751811d7b8c",
+    "transformation": "path/address sanitization; otherwise retained"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/authorized-install-20261009-steps-factory-ubi-bl2/factory.json",
+    "destination": "evidence/migration-factory.log",
+    "transformation": "allowlisted command/output fields; all private hashes omitted"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/authorized-install-20261009-steps-factory-ubi-bl2/ubi.json",
+    "destination": "evidence/migration-ubi.log",
+    "transformation": "allowlisted command/output fields; all private hashes omitted"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/authorized-install-20261009-steps-factory-ubi-bl2/bl2.json",
+    "destination": "evidence/migration-bl2.log",
+    "transformation": "allowlisted command/output fields; all private hashes omitted"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/full-device-audit/identity.json",
+    "destination": "evidence/installed-boot-and-storage.log",
+    "transformation": "allowlisted original stdout lines; all identifiers excluded"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/full-device-audit/flash-health.json",
+    "destination": "evidence/installed-boot-and-storage.log",
+    "transformation": "allowlisted original stdout lines; all identifiers excluded"
+  },
+  {
+    "source": "build-20261008-d4ebffe5/full-device-audit/memory-storage.json",
+    "destination": "evidence/installed-boot-and-storage.log",
+    "transformation": "allowlisted original stdout lines; all identifiers excluded"
+  }
+]

@@ -1,0 +1,12 @@
+--- a/arch/arm/dts/mt7986b-tplink_archer-ax80-v1-eu.dts
++++ b/arch/arm/dts/mt7986b-tplink_archer-ax80-v1-eu.dts
+@@ -271,3 +271,9 @@
+ &watchdog {
+ 	status = "disabled";
+ };
++
++/* RAM diagnostic build: never instantiate the NAND controller or device. */
++&spi0 {
++	status = "disabled";
++	/delete-node/ spi_nand@1;
++};

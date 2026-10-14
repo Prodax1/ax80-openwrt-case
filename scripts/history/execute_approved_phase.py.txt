@@ -1,0 +1,197 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Explicit, individually gated approved phases; never reboot or retry."""
+import argparse
+import base64
+import hashlib
+import json
+from pathlib import Path
+import re
+import shlex
+import time
+
+import paramiko
+from check_live_writable_gate import validate
+
+ROOT = Path(__file__).resolve().parent
+SESSION = ROOT / "authorized-install-20261009-steps-factory-ubi-bl2"
+RAM = "/tmp/ax80-staging-20261009-121159-78cef226"
+INTENT = ROOT / "installation-intent-private-e9af0a3e4298/intent.json"
+LOGICAL = ROOT / "write-review-ba49274031f9/report.json"
+
+
+class Operation:
+    def __init__(self, transport, phase):
+        self.transport = transport
+        self.path = SESSION / (phase + ".json")
+        if self.path.exists():
+            raise RuntimeError("Previous attempt exists; do not retry")
+        self.report = {"phase": phase, "status": "STARTED", "commands": [], "reboot": False,
+                       "authorization": "User explicitly approved factory/UBI/BL2 with verification and no reboot"}
+        self.save()
+
+    def save(self):
+        self.path.write_text(json.dumps(self.report, indent=2), encoding="utf-8")
+
+    def command(self, command, mutates=False):
+        row = {"command": command, "mutates": mutates, "status": "STARTED"}
+        self.report["commands"].append(row)
+        self.save()
+        channel = self.transport.open_session(timeout=15)
+        channel.set_combine_stderr(True)
+        channel.settimeout(300)
+        chunks = []
+        try:
+            channel.exec_command(command)
+            while True:
+                block = channel.recv(65536)
+                if not block:
+                    break
+                chunks.append(block)
+            text = b"".join(chunks).decode(errors="replace")
+            code = channel.recv_exit_status()
+            row.update({"output": text, "exit_code": code, "status": "PASS" if code == 0 else "FAIL"})
+            self.save()
+            if code:
+                raise RuntimeError("Command failed: " + command + "\n" + text)
+            if mutates:
+                print("Operation complete: " + command + "\n" + text[-2500:], flush=True)
+            return text
+        finally:
+            channel.close()
+
+
+def map_gate(operation):
+    identity = operation.command("cat /tmp/sysinfo/model; cat /proc/cmdline; cat /proc/mounts")
+    if "manual migration RAM candidate" not in identity or "root=/dev/ram0" not in identity:
+        raise RuntimeError("Wrong RAM image")
+    if not any(line.split()[:3] == ["tmpfs", "/tmp", "tmpfs"] for line in identity.splitlines()):
+        raise RuntimeError("RAM staging not on tmpfs")
+    if any(line.split()[0].startswith(("ubi", "/dev/ubi")) for line in identity.splitlines() if line.split()):
+        raise RuntimeError("Unexpected mounted UBI")
+    text = operation.command("cat /proc/mtd")
+    rows = []
+    for number, size, erase, name in re.findall(r'^mtd(\d+): ([0-9a-f]+) ([0-9a-f]+) "([^"]+)"$', text, re.M):
+        row = {"name": name, "device": "/dev/mtd" + number, "number": int(number)}
+        for field in ("offset", "size", "erasesize", "writesize", "oobsize", "flags", "bad_blocks", "ecc_failures", "corrected_bits"):
+            row[field] = int(operation.command("cat /sys/class/mtd/mtd" + number + "/" + field).strip(), 0)
+        rows.append(row)
+    validate(rows)
+    return {row["name"]: row for row in rows}
+
+
+def nand_counters(operation, mapping):
+    for name, row in mapping.items():
+        for field in ("bad_blocks", "ecc_failures", "corrected_bits"):
+            value = int(operation.command("cat /sys/class/mtd/mtd" + str(row["number"]) + "/" + field))
+            if value != row[field]:
+                raise RuntimeError("NAND counter changed: " + name + "/" + field)
+
+
+def require_hash(operation, path, expected):
+    value = operation.command("sha256sum " + shlex.quote(path)).split()[0]
+    if value != expected:
+        raise RuntimeError("Readback/hash mismatch: " + path)
+
+
+def verify_volumes(operation, mapping, expected):
+    if int(operation.command("cat /sys/class/ubi/ubi0/mtd_num")) != mapping["ubi"]["number"]:
+        raise RuntimeError("Wrong attached MTD")
+    if int(operation.command("cat /sys/class/ubi/ubi0/eraseblock_size")) != 126976:
+        raise RuntimeError("Wrong LEB size")
+    names = {}
+    paths = operation.command("for d in /sys/class/ubi/ubi0_*; do if [ -d $d ]; then echo $d; fi; done").splitlines()
+    for path in paths:
+        name = operation.command("cat " + path + "/name").strip()
+        if name in names or name not in expected:
+            raise RuntimeError("Wrong or duplicate UBI volume")
+        info = expected[name]
+        if operation.command("cat " + path + "/type").strip() != info["type"]:
+            raise RuntimeError("Wrong volume type")
+        for field in ("corrupted", "upd_marker"):
+            if int(operation.command("cat " + path + "/" + field)):
+                raise RuntimeError("UBI damaged/update in progress")
+        count = int(operation.command("cat " + path + "/reserved_ebs"))
+        if name == "rootfs_data":
+            if count <= 1:
+                raise RuntimeError("rootfs_data did not autoresize")
+        else:
+            if count != info["reserved_lebs_before_attach"]:
+                raise RuntimeError("Wrong reserved volume size")
+            if int(operation.command("cat " + path + "/data_bytes")) != info["readback_bytes"]:
+                raise RuntimeError("Wrong logical data size")
+            require_hash(operation, "/dev/" + path.rsplit("/", 1)[1], info["readback_sha256"])
+        names[name] = path
+    if set(names) != set(expected):
+        raise RuntimeError("Missing volumes")
+    print("All six UBI volumes and five payload hashes verified", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("phase", choices=("factory", "ubi", "bl2"))
+    parser.add_argument("--approved-write-no-reboot", action="store_true", required=True)
+    args = parser.parse_args()
+    SESSION.mkdir(exist_ok=True)
+    previous = {"ubi": "factory", "bl2": "ubi"}.get(args.phase)
+    if previous and json.loads((SESSION / (previous + ".json")).read_text())["status"] != "PASS":
+        raise RuntimeError("Previous phase not verified")
+    intent = json.loads(INTENT.read_text())
+    logical = json.loads(LOGICAL.read_text())
+    transport = paramiko.Transport(("<ADDRESS>", 22))
+    operation = None
+    try:
+        transport.start_client(timeout=15)
+        key = transport.get_remote_server_key()
+        fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+        if fingerprint != "<HOST_FINGERPRINT>":
+            raise RuntimeError("Host reboot/key change after staging; inspect state before writes")
+        transport.auth_none("root")
+        operation = Operation(transport, args.phase)
+        operation.report["fingerprint"] = fingerprint
+        mapping = map_gate(operation)
+        operation.report["mapping"] = mapping
+        require_hash(operation, "/sbin/mtd", intent["writer"]["expected_migration_mtd_sha256"])
+        for entry in intent["files"].values():
+            path = RAM + "/" + Path(entry["path"]).name
+            require_hash(operation, path, entry["sha256"])
+            if int(operation.command("wc -c < " + shlex.quote(path))) != entry["bytes"]:
+                raise RuntimeError("RAM file length mismatch")
+        memory = operation.command("cat /proc/meminfo")
+        available = int(next(line.split()[1] for line in memory.splitlines() if line.startswith("MemAvailable:"))) * 1024
+        if available < 134217728:
+            raise RuntimeError("Insufficient working RAM reserve")
+        attached = operation.command("for d in /sys/class/ubi/ubi[0-9]*; do if [ -e $d ]; then echo $d; fi; done").splitlines()
+        if args.phase != "bl2" and attached:
+            raise RuntimeError("UBI attached before formatting")
+        if args.phase == "factory":
+            operation.command("mtd write " + RAM + "/factory.bin " + mapping["factory"]["device"], True)
+            require_hash(operation, mapping["factory"]["device"], intent["files"]["factory"]["sha256"])
+        elif args.phase == "ubi":
+            require_hash(operation, mapping["factory"]["device"], intent["files"]["factory"]["sha256"])
+            operation.command("ubiformat " + mapping["ubi"]["device"] + " -s 2048 -O 2048 -f " + RAM + "/ubi.ubi -y", True)
+            operation.command("ubiattach /dev/ubi_ctrl -m " + str(mapping["ubi"]["number"]) + " -d 0", True)
+            verify_volumes(operation, mapping, logical["logical_ubi_readback"])
+        else:
+            verify_volumes(operation, mapping, logical["logical_ubi_readback"])
+            require_hash(operation, mapping["factory"]["device"], intent["files"]["factory"]["sha256"])
+            nand_counters(operation, mapping)
+            operation.command("mtd erase " + mapping["bl2"]["device"], True)
+            operation.command("mtd write " + RAM + "/bl2.bin " + mapping["bl2"]["device"], True)
+            require_hash(operation, mapping["bl2"]["device"], logical["full_bl2_partition_expected_sha256"])
+        nand_counters(operation, mapping)
+        operation.report["dmesg_after"] = operation.command("dmesg")
+        operation.report["status"] = "PASS"
+        operation.save()
+        print("PHASE PASS: " + args.phase + "; no reboot", flush=True)
+    except Exception as error:
+        if operation is not None:
+            operation.report.update({"status": "STOP", "error": str(error)})
+            operation.save()
+        raise
+    finally:
+        transport.close()
+
+
+if __name__ == "__main__":
+    main()

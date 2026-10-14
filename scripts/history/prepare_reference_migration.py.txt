@@ -1,0 +1,131 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Offline manual migration candidate; no router connection or auto-installer."""
+import copy
+import hashlib
+import json
+import lzma
+from pathlib import Path
+import subprocess
+import time
+import uuid
+
+import prepare_reference_diagnostic as diagnostic
+from inspect_initrd_archive import parse
+from inspect_reference_fit import unpack_initrd, verify_fit
+from prepare_ram_probe import ROOT, TOOLS, ARGS, compatible_nodes, get, nodes, props, run
+
+MODEL = 'TP-Link Archer AX80 v1 EU - manual migration RAM candidate'
+MAP = [('bl2', 0, 0x100000), ('factory', 0x100000, 0x100000), ('ubi', 0x200000, 0x7e00000)]
+MANUAL_TOOLS = {'mtd', 'ubiattach', 'ubidetach', 'ubiformat', 'ubimkvol', 'ubirmvol',
+                'ubiupdatevol', 'ubirename', 'nandwrite', 'flash_erase', 'flash_eraseall'}
+REQUIRED_TOOLS = {'mtd', 'ubiattach', 'ubidetach', 'ubiformat', 'ubimkvol', 'ubiupdatevol'}
+
+
+def migration_archive(original):
+    diagnostic_archive, _ = diagnostic.patch_archive(original)
+    before, safe = parse(original), parse(diagnostic_archive)
+    replacements = {name: entry['data'] for name, entry in safe.items()
+                    if name in before and entry['data'] != before[name]['data']}
+    removed = {name for name in before if Path(name).name in diagnostic.MUTATORS - MANUAL_TOOLS}
+    archive = diagnostic.rewrite_archive(original, replacements, removed)
+    after = parse(archive)
+    present = {Path(name).name for name in after}
+    if not REQUIRED_TOOLS <= present:
+        raise ValueError('Missing explicit manual migration tools: ' + str(REQUIRED_TOOLS - present))
+    if (diagnostic.MUTATORS - MANUAL_TOOLS) & present:
+        raise ValueError('Unwanted reset/sysupgrade/env tool retained')
+    for hook in diagnostic.DISABLED_HOOKS:
+        if after[hook]['data'] != safe[hook]['data']:
+            raise ValueError('Persistent boot hook restored')
+    for name in before:
+        if name not in removed and name not in replacements and after[name] != before[name]:
+            raise ValueError('Unexpected archive mutation')
+    return archive, {'manual_tools_present': sorted(MANUAL_TOOLS & present),
+                     'removed_tools': sorted(removed), 'disabled_hooks': sorted(replacements),
+                     'no_auto_installer_added': True, 'luci_preserved': True}
+
+
+def validate_dtb(dtb):
+    if get(dtb, '/', 'model') != MODEL:
+        raise ValueError('Wrong migration model')
+    parent = compatible_nodes(dtb, 'spi-nand')[0] + '/partitions'
+    actual = []
+    for child in run('fdtget', '-l', dtb, parent).splitlines():
+        node = parent + '/' + child
+        if 'read-only' in props(dtb, node) or run('fdtget', '-l', dtb, node):
+            raise ValueError('Unexpected protection or nested partition')
+        offset, size = [int(value, 16) for value in get(dtb, node, 'reg', 'x').split()]
+        actual.append((get(dtb, node, 'label'), offset, size))
+    if sorted(actual, key=lambda row: row[1]) != MAP:
+        raise ValueError('Wrong migration geometry')
+    for prop in ('bootargs', 'bootargs-override'):
+        if get(dtb, '/chosen', prop) != ARGS:
+            raise ValueError('Unsafe bootargs')
+    if {'rootdisk', 'bootargs-append'} & set(props(dtb, '/chosen')):
+        raise ValueError('Persistent root selector')
+    for node in nodes(dtb):
+        if 'compatible' in props(dtb, node) and 'linux,ubi' in get(dtb, node, 'compatible').split():
+            raise ValueError('UBI autoattach node')
+    for compat in ('mediatek,mt7986-wmac', 'mediatek,mt7986-wdt'):
+        for node in compatible_nodes(dtb, compat):
+            if get(dtb, node, 'status') != 'disabled':
+                raise ValueError('Unexpected active Wi-Fi/watchdog')
+    return {'map': MAP, 'manual_writable_partitions': True, 'ubi_autoattach': False,
+            'wifi_enabled': False, 'watchdog_enabled': False}
+
+
+def main():
+    output = ROOT / ('reference-migration-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+    output.mkdir(exist_ok=False)
+    baseline = output / 'readonly-baseline-not-for-install'
+    diagnostic.prepare(baseline)
+    for name in ('kernel-1.bin', 'fdt-1.bin'):
+        (output / name).write_bytes((baseline / name).read_bytes())
+    archive, archive_policy = migration_archive(unpack_initrd((baseline / 'original/initrd-1.bin').read_bytes()))
+    (output / 'initrd-1.bin').write_bytes(lzma.compress(archive, format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, preset=6))
+    dtb = output / 'fdt-1.bin'
+    parent = compatible_nodes(dtb, 'spi-nand')[0] + '/partitions'
+    run('fdtput', '-r', dtb, parent)
+    run('fdtput', '-c', dtb, parent)
+    run('fdtput', '-t', 's', dtb, parent, 'compatible', 'fixed-partitions')
+    for prop in ('#address-cells', '#size-cells'):
+        run('fdtput', '-t', 'x', dtb, parent, prop, '1')
+    for label, offset, size in MAP:
+        node = parent + f'/partition@{offset:x}'
+        run('fdtput', '-c', dtb, node)
+        run('fdtput', '-t', 's', dtb, node, 'label', label)
+        run('fdtput', '-t', 'x', dtb, node, 'reg', f'{offset:x}', f'{size:x}')
+    run('fdtput', '-t', 's', dtb, '/', 'model', MODEL)
+    policy = validate_dtb(dtb)
+    its = (baseline / 'diagnostic.its').read_text().replace(
+        'AX80 EU LuCI read-only diagnostic - OFFLINE CANDIDATE',
+        'AX80 EU manual migration RAM - OFFLINE CANDIDATE')
+    (output / 'migration.its').write_text(its)
+    image = output / 'ax80-eu-manual-migration-RAM-OFFLINE-CANDIDATE.itb'
+    subprocess.run([str(TOOLS / 'mkimage'), '-f', 'migration.its', image.name], cwd=output,
+                   check=True, stdout=subprocess.DEVNULL)
+    verified = output / 'verified'
+    verified.mkdir()
+    payloads = verify_fit(image, verified)
+    if hashlib.sha256((verified / 'kernel-1.bin').read_bytes()).hexdigest() != '671845a78635d1a97314ca0b3e93265b682742e3e52eb66ba51c9e1ade476633':
+        raise ValueError('Kernel changed')
+    validate_dtb(verified / 'fdt-1.bin')
+    if unpack_initrd((verified / 'initrd-1.bin').read_bytes()) != archive:
+        raise ValueError('Initrd roundtrip failed')
+    size = image.stat().st_size
+    if 115 * 126976 - size < 5 * 1024 * 1024 or 0x46000000 + size > 0x48000000:
+        raise ValueError('Capacity margin or RAM placement failed')
+    report = {'file': image.name, 'bytes': size, 'sha256': hashlib.sha256(image.read_bytes()).hexdigest(),
+              'payloads': payloads, 'kernel_unchanged': True, 'dtb_policy': policy,
+              'initrd_policy': archive_policy, 'kernel_volume_margin_bytes': 115 * 126976 - size,
+              'hardware_boot_verified': False, 'ready_to_flash_bootloader': False,
+              'delivery_from_current_ro_image_verified': False,
+              'no_router_operation': True, 'no_automatic_install': True}
+    (output / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')
+    (output / 'migration.dts').write_text(run('dtc', '-I', 'dtb', '-O', 'dts', dtb) + '\n')
+    print(json.dumps({'saved': str(output), **{key: report[key] for key in ('file', 'bytes', 'sha256', 'kernel_volume_margin_bytes', 'ready_to_flash_bootloader')}}, indent=2))
+
+
+if __name__ == '__main__':
+    main()

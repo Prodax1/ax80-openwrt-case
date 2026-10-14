@@ -1,0 +1,159 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Prepare private seeded env and UBI artifacts offline, never access a router."""
+
+import hashlib
+import json
+from pathlib import Path
+import struct
+import subprocess
+import uuid
+import zlib
+
+from prepare_ubi_offline_candidate import BASE, TOOL, PAGE, PEB, LEB, inspect
+
+ENV_SIZE = 0x1f000
+MKENV = Path('/local/ax80/build/candidate-04/u-boot-2026.01/tools/mkenvimage')
+
+
+def decode_env(blob):
+    if len(blob) != ENV_SIZE:
+        raise ValueError('Wrong env size')
+    if struct.unpack_from('<I', blob)[0] != zlib.crc32(blob[5:]):
+        raise ValueError('Bad env CRC')
+    end = blob[5:].find(b'\0\0')
+    if end < 0:
+        raise ValueError('Missing env terminator')
+    values = {}
+    for row in blob[5:5 + end].split(b'\0'):
+        key, value = row.decode('ascii').split('=', 1)
+        if key in values:
+            raise ValueError('Duplicate env variable')
+        values[key] = value
+    return values
+
+
+def encode_env(values, flag):
+    if not 0 <= flag <= 255:
+        raise ValueError('Invalid serial')
+    rows = []
+    for key, value in sorted(values.items()):
+        if not key or '=' in key or '\0' in key + value or '\n' in key + value:
+            raise ValueError('Unsafe env variable')
+        rows.append((key + '=' + value).encode('ascii'))
+    payload = b'\0'.join(rows) + b'\0\0'
+    if len(payload) > ENV_SIZE - 5:
+        raise ValueError('Environment too large')
+    payload = payload.ljust(ENV_SIZE - 5, b'\xff')
+    result = struct.pack('<IB', zlib.crc32(payload), flag) + payload
+    if decode_env(result) != values:
+        raise ValueError('Env roundtrip mismatch')
+    return result
+
+
+def select_copy(first, second, read_fail=(False, False)):
+    valid = []
+    for index, blob in enumerate((first, second)):
+        try:
+            decode_env(blob)
+            valid.append(not read_fail[index])
+        except ValueError:
+            valid.append(False)
+    if not any(valid):
+        return None
+    if not all(valid):
+        return 0 if valid[0] else 1
+    a, b = first[4], second[4]
+    if (a, b) == (255, 0):
+        return 1
+    if (a, b) == (0, 255):
+        return 0
+    return 0 if a >= b else 1
+
+
+def seeded_policy(template, mac):
+    if len(mac) != 6 or mac in (bytes(6), b'\xff' * 6) or mac[0] & 1:
+        raise ValueError('Invalid factory MAC')
+    values = dict(template)
+    for key in ('_firstboot', '_init_env', '_switch_to_menu', '_bootmenu_update_title',
+                'bootmenu_0d', 'ethaddr_factory'):
+        values.pop(key, None)
+    values['ethaddr'] = ':'.join(f'{byte:02x}' for byte in mac)
+    values['bootcmd'] = 'run check_buttons; run boot_recovery; run boot_tftp_forever'
+    values['boot_default'] = 'run led_boot; run bootcmd'
+    values['bootmenu_0'] = 'Boot verified recovery path.=run boot_default'
+    values['bootdelay'] = '2'
+    values['bootmenu_delay'] = '2'
+    return values
+
+
+def main():
+    old = BASE / 'ubi-offline-candidate-646e462bcb96/report.json'
+    report = json.loads(old.read_text())
+    payloads = {name: Path(item['path']) for name, item in report['inputs'].items()}
+    for name, path in payloads.items():
+        if hashlib.sha256(path.read_bytes()).hexdigest() != report['inputs'][name]['sha256']:
+            raise ValueError('Input changed: ' + name)
+    factory = BASE / 'preflash-private-local/factory-calibration-candidate.bin'
+    factory_manifest = json.loads((factory.parent / 'factory-manifest.json').read_text())
+    factory_data = factory.read_bytes()
+    if hashlib.sha256(factory_data).hexdigest() != factory_manifest['candidate_sha256']:
+        raise ValueError('Factory changed')
+    template_path = BASE / 'uboot-candidate04.env'
+    template_data = template_path.read_bytes()
+    expected = json.loads((BASE / 'bootchain-policy-9c672c655039.json').read_text())
+    pinned = expected['evidence_sha256'][str(template_path)]
+    if hashlib.sha256(template_data).hexdigest() != pinned:
+        raise ValueError('Template changed')
+    template = dict(line.split('=', 1) for line in template_data.decode().splitlines() if '=' in line)
+    values = seeded_policy(template, factory_data[0x8000:0x8006])
+    output = BASE / ('seeded-env-private-' + uuid.uuid4().hex[:12])
+    output.mkdir(mode=0o700)
+    (output / '.gitignore').write_text('*\n')
+    copies = (encode_env(values, 1), encode_env(values, 0))
+    for name, blob in zip(('ubootenv', 'ubootenv2'), copies):
+        path = output / (name + '.bin')
+        path.write_bytes(blob)
+        payloads[name] = path
+    # Compare with the actual host tool, passing text via stdin, not a plaintext file.
+    text = ''.join(key + '=' + value + '\n' for key, value in sorted(values.items())).encode()
+    reference = output / 'mkenvimage-reference.bin'
+    subprocess.run([str(MKENV), '-r', '-s', str(ENV_SIZE), '-p', '0xff', '-o', str(reference), '-'],
+                   input=text, check=True, capture_output=True)
+    if reference.read_bytes() != copies[0]:
+        raise ValueError('Host mkenvimage differs')
+    sections = []
+    for vol_id, name in enumerate(('fip', 'ubootenv', 'ubootenv2', 'fit', 'recovery', 'rootfs_data')):
+        rows = [f'[{name}]', 'mode=ubi', f'vol_id={vol_id}', f'vol_name={name}',
+                'vol_type=' + ('static' if name == 'fip' else 'dynamic')]
+        if name in payloads:
+            rows.append('image=' + str(payloads[name]))
+        else:
+            rows.extend(('vol_size=' + str(LEB), 'vol_flags=autoresize'))
+        sections.append('\n'.join(rows))
+    config = output / 'layout.ini'
+    config.write_text('\n\n'.join(sections) + '\n')
+    image = output / 'AX80-SEEDED-UBI-OFFLINE-NOT-APPROVED.ubi'
+    subprocess.run([str(TOOL), '-o', str(image), '-p', str(PEB), '-m', str(PAGE),
+                    '-s', str(PAGE), '-O', str(PAGE), '-Q', '2', str(config)],
+                   check=True, capture_output=True)
+    data = image.read_bytes()
+    result = inspect(data, payloads)
+    result.update({'image_size': len(data), 'image_sha256': hashlib.sha256(data).hexdigest(),
+                   'env_crc_roundtrip': True, 'mkenvimage_exact_match': True,
+                   'selected_copy': select_copy(*copies), 'env_flags': [1, 0],
+                   'first_boot': 'recovery then TFTP fallback; production not automatic',
+                   'automatic_firstboot_env_init_removed': True,
+                   'factory_mac_match': True, 'factory_sha256': factory_manifest['candidate_sha256'],
+                   'artifact_scope': 'private device-specific; do not publish',
+                   'ready_to_flash': False, 'router_access': False,
+                   'inputs': {name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                              for name, path in payloads.items()}})
+    (output / 'report.json').write_text(json.dumps(result, indent=2) + '\n')
+    print(json.dumps({'output': str(output), 'image_size': len(data),
+                      'image_sha256': result['image_sha256'], 'mkenvimage_exact_match': True,
+                      'payload_roundtrip_valid': True, 'ready_to_flash': False}, indent=2))
+
+
+if __name__ == '__main__':
+    main()

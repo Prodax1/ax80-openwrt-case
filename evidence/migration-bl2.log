@@ -1,0 +1,15 @@
+# Historical bl2 write/readback excerpt. Addresses, RAM directory and device-specific hashes removed.
+$ cat /sys/class/ubi/ubi0/mtd_num
+exit_code=0
+[repetitive progress and unrelated output omitted]
+$ cat /sys/class/ubi/ubi0/eraseblock_size
+exit_code=0
+[repetitive progress and unrelated output omitted]
+$ mtd erase /dev/mtd2
+exit_code=0
+Erasing /dev/mtd2 ...
+[repetitive progress and unrelated output omitted]
+$ mtd write <RAM_DIR>/bl2.bin /dev/mtd2
+exit_code=0
+Writing from /tmp/ax80-staging-20261009-121159-78cef226/bl2.bin to /dev/mtd2 ...  [ ][e][w][e][w]
+[repetitive progress and unrelated output omitted]

@@ -1,0 +1,17 @@
+[
+  {
+    "phase": "factory",
+    "status": "PASS",
+    "reboot": false
+  },
+  {
+    "phase": "ubi",
+    "status": "PASS",
+    "reboot": false
+  },
+  {
+    "phase": "bl2",
+    "status": "PASS",
+    "reboot": false
+  }
+]

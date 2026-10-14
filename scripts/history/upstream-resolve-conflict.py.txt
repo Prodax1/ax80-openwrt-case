@@ -1,0 +1,24 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+from pathlib import Path
+
+repo = Path('/local/ax80/build/upstream-pr-20261013/openwrt')
+out = Path('/local/ax80/upstream-pr/evidence')
+file = repo / 'target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh'
+text = file.read_text()
+(out / 'platform-conflicts.txt').write_text(text)
+old = '''<<<<<<< HEAD
+	teralink,tl3020-256mb|\\
+	tplink,be450-ubi|\\
+	tplink,tl-7dr7230*|\\
+	tplink,tl-7dr7250*|\\
+=======
+	tplink,archer-ax80-v1-eu-ubi|\\
+>>>>>>> d4ebffe538 (mediatek: add UBI layout for TP-Link Archer AX80 v1 EU)'''
+new = '''	teralink,tl3020-256mb|\\
+	tplink,archer-ax80-v1-eu-ubi|\\
+	tplink,be450-ubi|\\
+	tplink,tl-7dr7230*|\\
+	tplink,tl-7dr7250*|\\'''
+assert text.count(old) == 2, 'Expected exactly the two recorded conflicts'
+file.write_text(text.replace(old, new))

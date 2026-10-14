@@ -1,0 +1,10 @@
+--- a/package/custom/kmod-amneziawg/Makefile
++++ b/package/custom/kmod-amneziawg/Makefile
+@@ -20,6 +20,7 @@
+ 	TITLE:=AmneziaWG VPN Kernel Module
+ 	FILES:=$(PKG_BUILD_DIR)/$(MAKE_PATH)/amneziawg.ko
+ 	DEPENDS:= \
++		+kmod-wireguard \
+ 		+kmod-udptunnel4 \
+ 		+kmod-udptunnel6 \
+ 		+kmod-crypto-lib-chacha20poly1305 \

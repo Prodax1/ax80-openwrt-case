@@ -1,0 +1,19 @@
+# Historical ubi write/readback excerpt. Addresses, RAM directory and device-specific hashes removed.
+$ ubiformat /dev/mtd0 -s 2048 -O 2048 -f <RAM_DIR>/ubi.ubi -y
+exit_code=0
+ubiformat: mtd0 (nand), size 132120576 bytes (126.0 MiB), 1008 eraseblocks of 131072 bytes (128.0 KiB), min. I/O size 2048 bytes
+libscan: scanning eraseblock 1007 -- 100 % complete  ubiformat: warning!: 1 of 1008 eraseblocks contain non-UBI data
+ubiformat: 960 eraseblocks have valid erase counter, mean value is 3
+ubiformat: 47 eraseblocks are supposedly empty
+ubiformat: formatting eraseblock 1007 -- 100 % complete
+[repetitive progress and unrelated output omitted]
+$ ubiattach /dev/ubi_ctrl -m 0 -d 0
+exit_code=0
+UBI device number 0, total 1008 LEBs (127991808 bytes, 122.0 MiB), available 0 LEBs (0 bytes), LEB size 126976 bytes (124.0 KiB)
+[repetitive progress and unrelated output omitted]
+$ cat /sys/class/ubi/ubi0/mtd_num
+exit_code=0
+[repetitive progress and unrelated output omitted]
+$ cat /sys/class/ubi/ubi0/eraseblock_size
+exit_code=0
+[repetitive progress and unrelated output omitted]

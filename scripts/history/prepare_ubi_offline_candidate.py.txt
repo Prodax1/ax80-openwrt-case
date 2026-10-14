@@ -1,0 +1,130 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Build and inspect an offline UBI candidate. No device or network access."""
+
+import hashlib
+import json
+from pathlib import Path
+import struct
+import subprocess
+import uuid
+import zlib
+
+BASE = Path(__file__).resolve().parent
+TOOL = Path('/local/ax80/build/custom-01/staging_dir/host/bin/ubinize')
+PEB, PAGE, LEB = 131072, 2048, 126976
+CAPACITY = 132120576
+
+
+def crc(data):
+    return zlib.crc32(data) ^ 0xffffffff
+
+
+def be32(data, offset):
+    return struct.unpack_from('>I', data, offset)[0]
+
+
+def inspect(data, payloads):
+    if not data or len(data) % PEB or len(data) > CAPACITY:
+        raise ValueError('Invalid image size')
+    volumes, tables = {}, []
+    for offset in range(0, len(data), PEB):
+        block = data[offset:offset + PEB]
+        ec = block[:64]
+        if ec[:4] != b'UBI#' or crc(ec[:60]) != be32(ec, 60):
+            raise ValueError('Bad EC header/CRC')
+        if (be32(ec, 16), be32(ec, 20)) != (PAGE, PAGE * 2):
+            raise ValueError('Geometry differs from BL2 reader')
+        vid = block[PAGE:PAGE + 64]
+        if vid[:4] != b'UBI!' or crc(vid[:60]) != be32(vid, 60):
+            raise ValueError('Bad VID header/CRC')
+        vol_id, lnum = be32(vid, 8), be32(vid, 12)
+        contents = block[PAGE * 2:]
+        if vol_id == 0x7fffefff:
+            tables.append(contents[:128 * 172])
+            continue
+        if vid[5] == 2:
+            size = be32(vid, 20)
+            if crc(contents[:size]) != be32(vid, 32):
+                raise ValueError('Bad static payload CRC')
+        records = volumes.setdefault(vol_id, {})
+        if lnum in records:
+            raise ValueError('Duplicate LEB')
+        records[lnum] = contents
+    if len(tables) != 2 or tables[0] != tables[1]:
+        raise ValueError('Missing or inconsistent layout copies')
+    entries = {}
+    for vol_id in range(128):
+        record = tables[0][vol_id * 172:(vol_id + 1) * 172]
+        if crc(record[:168]) != be32(record, 168):
+            raise ValueError('Bad volume-table CRC')
+        reserved = be32(record, 0)
+        if not reserved:
+            continue
+        name_len = struct.unpack_from('>H', record, 14)[0]
+        name = record[16:16 + name_len].decode('ascii')
+        entries[name] = {'id': vol_id, 'reserved_lebs': reserved,
+                         'type': record[12], 'flags': record[144]}
+    expected = {'fip', 'ubootenv', 'ubootenv2', 'fit', 'recovery', 'rootfs_data'}
+    if set(entries) != expected or entries['fip']['type'] != 2:
+        raise ValueError('Wrong volume names/type')
+    for name, path in payloads.items():
+        original = path.read_bytes()
+        records = volumes[entries[name]['id']]
+        if sorted(records) != list(range(len(records))):
+            raise ValueError('Non-contiguous logical blocks')
+        extracted = b''.join(records[index] for index in sorted(records))[:len(original)]
+        if extracted != original:
+            raise ValueError('Payload roundtrip mismatch: ' + name)
+    reserved = sum(item['reserved_lebs'] for item in entries.values())
+    # Conservative offline budget, not a measurement of device UBI reservations.
+    if reserved + 2 + 32 > CAPACITY // PEB:
+        raise ValueError('Insufficient conservative UBI headroom')
+    return {'volumes': entries, 'reserved_lebs': reserved,
+            'conservative_extra_pebs': 34, 'available_pebs': CAPACITY // PEB,
+            'ec_vid_table_crc_valid': True, 'payload_roundtrip_valid': True}
+
+
+def main():
+    images = BASE / 'completed-images-20261008T215302Z-179979'
+    payloads = {
+        'fip': BASE / 'artifacts-candidate04-research-only/research-bl31-uboot.fip',
+        'fit': images / 'openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-squashfs-sysupgrade.itb',
+        'recovery': images / 'openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi-initramfs-recovery.itb',
+    }
+    if hashlib.sha256(payloads['fit'].read_bytes()).hexdigest() != '4885a5ffda4d4904fb76c7b810fce0eac8d7b8e9f466963215a119f833fffc00':
+        raise ValueError('Custom FIT pin mismatch')
+    output = BASE / ('ubi-offline-candidate-' + uuid.uuid4().hex[:12])
+    output.mkdir()
+    sections = []
+    for vol_id, name in enumerate(('fip', 'ubootenv', 'ubootenv2', 'fit', 'recovery', 'rootfs_data')):
+        section = [f'[{name}]', 'mode=ubi', f'vol_id={vol_id}', f'vol_name={name}',
+                   'vol_type=' + ('static' if name == 'fip' else 'dynamic')]
+        if name in payloads:
+            section.append('image=' + str(payloads[name]))
+        else:
+            section.append('vol_size=' + str(LEB))
+        if name == 'rootfs_data':
+            section.append('vol_flags=autoresize')
+        sections.append('\n'.join(section))
+    config = output / 'layout.ini'
+    config.write_text('\n\n'.join(sections) + '\n')
+    image = output / 'AX80-UBI-OFFLINE-NOT-APPROVED.ubi'
+    result = subprocess.run([str(TOOL), '-o', str(image), '-p', str(PEB),
+                             '-m', str(PAGE), '-s', str(PAGE), '-O', str(PAGE),
+                             '-Q', '1', str(config)], capture_output=True, text=True, check=True)
+    data = image.read_bytes()
+    report = inspect(data, payloads)
+    report.update({'image_size': len(data), 'image_sha256': hashlib.sha256(data).hexdigest(),
+                   'inputs': {name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                              for name, path in payloads.items()},
+                   'scope': 'offline only; no NAND access', 'ready_to_flash': False,
+                   'not_proven': ['BootROM BL2 loading', 'ATF DDR initialization',
+                                  'Linux writer compatibility', 'hardware recovery availability'],
+                   'ubinize_output': result.stdout + result.stderr})
+    (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps({'output': str(output), **report}, indent=2))
+
+
+if __name__ == '__main__':
+    main()

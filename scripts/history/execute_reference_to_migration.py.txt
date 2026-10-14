@@ -1,0 +1,130 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""User-approved next kernel transition, then read-only migration preflight."""
+import base64
+import hashlib
+import json
+import socket
+import time
+import uuid
+
+import paramiko
+from backup_current_ssh import receive, file_hash
+from diagnostic_preflight_plan import sysfs_records
+from execute_kernel_reserve_stage_a import ROOT, save, read_state
+from execute_diagnostic_stage_b import upload_ram
+
+IMAGE = ROOT / 'reference-migration-20261009-060034-447b9530/ax80-eu-manual-migration-RAM-OFFLINE-CANDIDATE.itb'
+SHA = '<PRIVATE_OR_ARTIFACT_PIN>'
+REFERENCE_SHA = '<PRIVATE_OR_ARTIFACT_PIN>'
+MODEL = 'TP-Link Archer AX80 v1 EU - manual migration RAM candidate'
+
+
+def connect(output, label, delay=0):
+    time.sleep(delay)
+    deadline = time.monotonic() + 150
+    while time.monotonic() < deadline:
+        transport = None
+        try:
+            sock = socket.create_connection(('<ADDRESS>', 22), timeout=4)
+            transport = paramiko.Transport(sock)
+            transport.start_client(timeout=8)
+            key = transport.get_remote_server_key()
+            fingerprint = 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip('=')
+            save(output / (label + '-key.json'), {'fingerprint': fingerprint,
+                'authorization': 'temporary changed-key trust for this AX80 until stable firmware complete'})
+            transport.auth_none('root')
+            return transport
+        except Exception:
+            if transport is not None:
+                transport.close()
+            time.sleep(5)
+    raise RuntimeError('SSH unavailable; do not retry writes/reboot')
+
+
+def main():
+    if IMAGE.stat().st_size != 9323820 or file_hash(IMAGE) != SHA:
+        raise ValueError('Local image pin mismatch')
+    output = ROOT / ('reference-to-migration-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+    output.mkdir(exist_ok=False)
+    transport = None
+    attempted = False
+    try:
+        transport = connect(output, 'official', delay=15)
+        before = read_state(transport)
+        identity = before['sections']['identity']
+        if 'Linux OpenWrt 6.12.71' not in identity or 'TP-Link Archer AX80 v1 (EU)' not in identity or 'uid=0' not in identity:
+            raise ValueError('Wrong official image/board')
+        if 'tmpfs / tmpfs' not in before['sections']['boot_and_mounts']:
+            raise ValueError('Not a RAM root')
+        records = sysfs_records(before['sections']['ubi'], '/sys/class/ubi/')
+        k = records['ubi0_1']
+        if (records['ubi0']['mtd_num'], k['name'], k['type'], k['reserved_ebs'], k['corrupted'], k['upd_marker']) != ('2', 'kernel', 'static', '115', '0', '0'):
+            raise ValueError('Wrong kernel target')
+        if before['payload_hashes']['ubi0_1'] != REFERENCE_SHA:
+            raise ValueError('Official kernel readback mismatch')
+        save(output / 'official-before.json', before)
+        ram = '/tmp/ax80-migration-' + uuid.uuid4().hex
+        receive(transport, 'mkdir -m 700 ' + ram)
+        target = ram + '/migration.itb'
+        upload_ram(transport, IMAGE, target)
+        actual = receive(transport, 'wc -c < ' + target + '; sha256sum ' + target).decode().split()
+        if int(actual[0]) != 9323820 or actual[1] != SHA:
+            raise ValueError('RAM file mismatch')
+        command = 'ubiupdatevol /dev/ubi0_1 ' + target
+        save(output / 'write-intent.json', {'command': command, 'scope': 'kernel only; user requested official then our initramfs',
+                                           'no_bootloader_factory_env_write': True})
+        attempted = True
+        receive(transport, command)
+        after = read_state(transport)
+        expected_hashes = dict(before['payload_hashes'])
+        expected_hashes['ubi0_1'] = SHA
+        if after['payload_hashes'] != expected_hashes:
+            raise ValueError('Readback or neighboring data mismatch')
+        new = sysfs_records(after['sections']['ubi'], '/sys/class/ubi/')
+        expected = {name: dict(fields) for name, fields in records.items()}
+        expected['ubi0_1']['data_bytes'] = '9323820'
+        if new != expected or after['sections']['mtd_fields'] != before['sections']['mtd_fields']:
+            raise ValueError('Unexpected UBI/MTD state after update')
+        save(output / 'verified-before-reboot.json', after)
+        receive(transport, '(sleep 3; reboot) >/dev/null 2>&1 </dev/null &')
+        transport.close()
+        transport = connect(output, 'migration', delay=20)
+        identity = receive(transport, "id; uname -a; tr -d '\\000' </sys/firmware/devicetree/base/model").decode()
+        if MODEL not in identity or 'uid=0' not in identity:
+            raise ValueError('Migration image did not boot')
+        commands = {
+            'boot': 'cat /proc/cmdline; cat /proc/mounts; cat /proc/meminfo | head -n 8',
+            'mtd': 'for p in /sys/class/mtd/mtd[0-9]*; do [ -r "$p/name" ] || continue; echo "$p"; for f in name size offset flags erasesize writesize oobsize bad_blocks corrected_bits ecc_failures; do printf "%s=" "$f"; cat "$p/$f"; done; done',
+            'attachments': 'for p in /sys/class/ubi/ubi[0-9]* /sys/class/ieee80211/phy*; do [ ! -e "$p" ] || echo "$p"; done; true',
+            'tools': 'for t in mtd ubiattach ubidetach ubiformat ubimkvol ubiupdatevol; do command -v "$t"; done',
+            'nand_log': "dmesg | grep -iE 'nand|ubi|ecc|bad block'; true",
+        }
+        sections = {name: receive(transport, command).decode() for name, command in commands.items()}
+        fields = sysfs_records(sections['mtd'], '/sys/class/mtd/')
+        expected_map = {'bl2': (0, 1048576), 'factory': (1048576, 1048576), 'ubi': (2097152, 132120576)}
+        actual_map = {row['name']: (int(row['offset']), int(row['size'])) for row in fields.values()}
+        if len(fields) != 3 or actual_map != expected_map:
+            raise ValueError('Wrong migration map')
+        for row in fields.values():
+            if not int(row['flags'], 0) & 0x400 or any(int(row[f]) for f in ('bad_blocks', 'corrected_bits', 'ecc_failures')):
+                raise ValueError('Protection/ECC mismatch')
+        if 'tmpfs / tmpfs' not in sections['boot'] or 'ubi.mtd=' in sections['boot'] or sections['attachments'].strip():
+            raise ValueError('Not detached RAM-only migration environment')
+        result = {'migration_boot_verified': True, 'writable_map_verified': True,
+                  'ubi_detached': True, 'wifi_disabled': True, 'ecc_counters_zero': True,
+                  'bootloader_updated': False, 'final_migration_authorized': False,
+                  'identity': identity, 'sections': sections}
+        save(output / 'result.json', result)
+        print(json.dumps({'saved': str(output), **{name: result[name] for name in result if name not in ('sections', 'identity')}}, indent=2))
+    except Exception as error:
+        save(output / 'STOP.json', {'error': str(error), 'kernel_write_attempted': attempted,
+                                   'no_automatic_retry_or_reboot': True})
+        raise
+    finally:
+        if transport is not None:
+            transport.close()
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,53 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Register verified env geometry, checking that both NAND env blobs stay unchanged."""
+import hashlib
+import json
+import uuid
+from pathlib import Path
+import paramiko
+from backup_current_ssh import receive
+from restore_owner_settings import put
+from prepare_seeded_env_ubi import decode_env, select_copy
+
+ROOT = Path(__file__).resolve().parent
+out = ROOT / ('envtools-config-private-' + uuid.uuid4().hex[:12])
+out.mkdir()
+(out / '.gitignore').write_text('*\n')
+t = paramiko.Transport(('<ADDRESS>', 22))
+report = {'boot_env_writes': False, 'reboot': False, 'completed': False}
+try:
+    t.start_client(timeout=15)
+    expected = json.loads((ROOT / 'settings-restore-private-906e725047a0/report.json').read_text())['ssh_key_sha256_hex']
+    if hashlib.sha256(t.get_remote_server_key().asbytes()).hexdigest() != expected:
+        raise RuntimeError('Host key mismatch')
+    t.auth_publickey('root', paramiko.Ed25519Key.from_private_key_file('<LOCAL_SOURCE_DIR>'))
+    env = [receive(t, 'cat /dev/ubi0_' + str(i)) for i in (1, 2)]
+    for data in env:
+        decode_env(data)
+    selected = select_copy(*env)
+    bootcmd = decode_env(env[selected])['bootcmd']
+    for p in ('/etc/fw_env.config', '/etc/config/ubootenv'):
+        if receive(t, 'if [ -f ' + p + ' ]; then echo yes; else echo no; fi').strip() == b'yes':
+            data = receive(t, 'cat ' + p)
+            saved = out / (Path(p).name + '.before')
+            saved.write_bytes(data)
+            if receive(t, 'sha256sum ' + p).decode().split()[0] != hashlib.sha256(saved.read_bytes()).hexdigest():
+                raise RuntimeError('Config backup mismatch')
+    hook = '/tmp/ax80-envtools-' + uuid.uuid4().hex[:12] + '.sh'
+    put(t, hook, (ROOT / 'donor-ghostnet-overlay/etc/uci-defaults/99x-ax80-envtools').read_bytes())
+    receive(t, 'sh -n ' + hook + '; sh ' + hook)
+    printed = receive(t, 'fw_printenv -n bootcmd').decode().strip()
+    if printed != bootcmd:
+        raise RuntimeError('Env read selects wrong boot policy')
+    after = [receive(t, 'cat /dev/ubi0_' + str(i)) for i in (1, 2)]
+    if after != env:
+        raise RuntimeError('Env blobs changed unexpectedly')
+    report['env_blobs_unchanged'] = True
+    report['fw_printenv_matches_selected_copy'] = True
+    report['completed'] = True
+finally:
+    t.close()
+    (out / 'report.json').write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))
+    print('EVIDENCE=' + str(out))

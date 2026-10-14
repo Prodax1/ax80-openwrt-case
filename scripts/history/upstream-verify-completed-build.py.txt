@@ -1,0 +1,119 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Verify the existing build offline; write new evidence without rebuilding."""
+from datetime import datetime, timezone
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+repo = Path('/local/ax80/build/upstream-pr-20261013/openwrt')
+out = Path('/local/ax80/upstream-pr')
+old = out.parent / 'build-20261008-d4ebffe5'
+target = repo / 'bin/targets/mediatek/filogic'
+stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+evidence = out / 'evidence' / ('build-verification-' + stamp)
+assert evidence.resolve().parent == (out / 'evidence').resolve()
+evidence.mkdir(exist_ok=False)
+
+def run(*args):
+    return subprocess.check_output([str(arg) for arg in args], cwd=repo, text=True).strip()
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+def save(name, data):
+    path = evidence / name
+    assert path.resolve().parent == evidence.resolve()
+    with path.open('x') as stream:
+        stream.write(json.dumps(data, indent=2) + '\n')
+
+head = run('git', 'rev-parse', 'HEAD')
+assert head == 'c45a44104bed327868be619a0d4e621952b05e1f'
+assert run('git', 'branch', '--show-current') == 'ax80-eu-ubi-rebased'
+assert run('git', 'status', '--porcelain') == ''
+assert (out / 'evidence/build-result.txt').read_text().strip().endswith('exit=0')
+assert (repo / '.config').read_bytes() == (out / 'evidence/build.config').read_bytes()
+records = json.loads((out / 'evidence/artifacts.json').read_text())
+for record in records:
+    name = record['file']
+    assert Path(name).name == name
+    for folder in (target, out / 'artifacts'):
+        path = folder / name
+        assert path.stat().st_size == record['bytes']
+        assert digest(path) == record['sha256'], str(path)
+expected_sums = ''.join(f"{r['sha256']}  {r['file']}\n" for r in records)
+assert (out / 'artifacts/SHA256SUMS').read_text() == expected_sums
+profiles = json.loads((target / 'profiles.json').read_text())
+assert profiles['git_commit'] == head
+assert profiles['target'] == 'mediatek/filogic'
+assert set(profiles['profiles']) == {'tplink_archer-ax80-v1-eu', 'tplink_archer-ax80-v1-eu-ubi'}
+images = [img for profile in profiles['profiles'].values() for img in profile['images']]
+assert len(images) == 6
+for img in images:
+    assert digest(target / img['name']) == img['sha256']
+    assert (target / img['name']).stat().st_size == img['size']
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('fit_validator', old / 'verify_fit.py')
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
+tools = json.loads((out / 'evidence/validation-tools.json').read_text())
+prefix = 'openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi'
+for suffix, kind in (('-initramfs-recovery.itb', 'recovery'), ('-squashfs-sysupgrade.itb', 'custom')):
+    result = validator.validate(target / (prefix + suffix), Path(tools['dumpimage']), Path(tools['fdtget']), kind)
+    save('fit-' + kind + '.json', result)
+
+stage = repo / 'staging_dir/target-aarch64-openwrt-linux-musl_musl/image'
+fip = target / (prefix + '-bl31-uboot.fip')
+uboot = repo / 'build_dir/target-aarch64-openwrt-linux-musl_musl/u-boot-mt7986_tplink_archer-ax80-v1-eu/u-boot-2026.07/u-boot.bin'
+with tempfile.TemporaryDirectory(prefix='ax80-fip-check-') as directory:
+    bl31, bl33 = (Path(directory) / name for name in ('bl31.bin', 'u-boot.bin'))
+    run(tools['fiptool'], 'unpack', '--soc-fw', bl31, '--nt-fw', bl33, fip)
+    assert digest(bl31) == digest(stage / 'mt7986-spim-nand-ubi-ddr3-bl31.bin')
+    assert digest(bl33) == digest(uboot)
+    save('bootloader.json', {'fip_info': run(tools['fiptool'], 'info', fip),
+         'bl31_bytes': bl31.stat().st_size, 'uboot_bytes': bl33.stat().st_size,
+         'payloads_match_current_build': True})
+assert digest(target / (prefix + '-preloader.bin')) == digest(stage / 'mt7986-spim-nand-ubi-ddr3-bl2.img')
+
+baseline = json.loads((out / 'evidence/baseline-artifacts.json').read_text())
+for record in baseline:
+    path = old / record['file']
+    assert path.resolve().is_relative_to(old.resolve())
+    assert path.stat().st_size == record['bytes'] and digest(path) == record['sha256']
+
+old_manifest = old / 'completed-images-20261008T215302Z-179979/custom-01-openwrt-mediatek-filogic-tplink_archer-ax80-v1-eu-ubi.manifest'
+old_packages = {line.split(' - ')[0] for line in old_manifest.read_text().splitlines()}
+linux = repo / 'build_dir/target-aarch64-openwrt-linux-musl_musl/linux-mediatek_filogic'
+roots = list(linux.glob('target-dir-*'))
+assert len(roots) == 2
+package_results = []
+for root in sorted(roots):
+    manifest = run(repo / 'staging_dir/host/bin/apk', '--root', root, '--keys-dir', repo,
+                   '--no-logfile', '--no-network', '--repositories-file', '/dev/null',
+                   'list', '--quiet', '--manifest')
+    packages = {line.split()[0] for line in manifest.splitlines()}
+    assert {'kmod-mt7915e', 'kmod-mt7986-firmware', 'mt7986-wo-firmware', 'wpad-basic-mbedtls'} <= packages
+    profile_id = 'tplink_archer-ax80-v1-eu' + ('' if 'kmod-usb3' in packages else '-ubi')
+    assert set(profiles['profiles'][profile_id]['device_packages']) <= packages
+    with (evidence / (root.name + '.manifest')).open('x') as stream:
+        stream.write(manifest + '\n')
+    package_results.append({'profile': profile_id, 'profile_inferred_from_usb3_package': True,
+         'rootfs': str(root.relative_to(repo)), 'old_production_count': len(old_packages),
+         'new_count': len(packages), 'only_in_old': sorted(old_packages - packages),
+         'only_in_new': sorted(packages - old_packages)})
+save('profile-package-comparison.json', package_results)
+save('result.json', {'verified_at_utc': stamp, 'commit': head, 'git_clean': True,
+     'recorded_make_exit': 0, 'build_repeated': False, 'verified_artifact_files': len(records),
+     'verified_profile_images': len(images), 'fit_payload_hashes_checked': True,
+     'fip_payloads_and_preloader_match_current_build': True,
+     'baseline_artifacts_rehashed': len(baseline), 'hardware_test_performed': False})
+assert run('git', 'status', '--porcelain') == ''
+print('PASS: 11 copied files, 6 profile images, UBI FIT hashes, BL2/FIP payloads, old baseline hashes.')
+print('Package counts: ' + ', '.join(f"{r['profile']}={r['new_count']}" for r in package_results))
+print('Evidence: ' + str(evidence))

@@ -1,0 +1,2 @@
+EL3 Runtime Firmware BL31: offset=0x88, size=0x92AC, cmdline="--soc-fw"
+Non-Trusted Firmware BL33: offset=0x9334, size=0xF09A0, cmdline="--nt-fw"

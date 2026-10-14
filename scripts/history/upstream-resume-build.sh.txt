@@ -1,0 +1,22 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+#!/bin/bash
+set -euo pipefail
+export LC_ALL=C.UTF-8 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
+export PATH=/usr/local/sbi<LOCAL_SOURCE_DIR>
+out=/local/ax80/upstream-pr
+repo=/local/ax80/build/upstream-pr-20261013/openwrt
+cd "$repo"
+test "$(git branch --show-current)" = ax80-eu-ubi-rebased
+test -z "$(git status --porcelain)"
+test ! -e "$out/logs/build-final.log"
+# The previous make is allowed to finish its remaining jobs; never build the
+# same tree concurrently. This wait observes only the current build user.
+while pgrep -u codexbuild -f '^make -j8 V=s$' >/dev/null; do sleep 2; done
+exec > "$out/logs/build-final.log" 2>&1
+date -u --iso-8601=seconds
+printf 'PATH=%s\n' "$PATH"
+git rev-parse HEAD
+make -j8 V=s
+printf 'build-original-source-after-PATH-fix: exit=0\n' > "$out/evidence/build-result.txt"
+date -u --iso-8601=seconds

@@ -1,0 +1,46 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+#!/bin/bash
+set -euo pipefail
+export LC_ALL=C.UTF-8 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
+export PATH=/usr/local/sbi<LOCAL_SOURCE_DIR>
+out=/local/ax80/upstream-pr
+repo=/local/ax80/build/upstream-pr-20261013/openwrt
+cd "$repo"
+test "$(git branch --show-current)" = ax80-eu-ubi-rebased
+test -z "$(git status --porcelain)"
+test ! -e .config
+test ! -e "$out/logs/build-session.log"
+exec > >(tee "$out/logs/build-session.log") 2>&1
+date -u --iso-8601=seconds
+git rev-parse HEAD origin/main
+# Copy only public source downloads, never the old custom overlay or its config.
+cp -a --reflink=auto /local/ax80/build/recovery-02/dl .
+cat > .config <<'EOF'
+CONFIG_TARGET_mediatek=y
+CONFIG_TARGET_mediatek_filogic=y
+CONFIG_TARGET_MULTI_PROFILE=y
+CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_tplink_archer-ax80-v1-eu=y
+CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_tplink_archer-ax80-v1-eu-ubi=y
+CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+CONFIG_TARGET_ROOTFS_INITRAMFS=y
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+CONFIG_DEVEL=y
+CONFIG_EXTERNAL_TOOLCHAIN=y
+CONFIG_TARGET_NAME="aarch64-openwrt-linux-musl"
+CONFIG_TOOLCHAIN_PREFIX="aarch64-openwrt-linux-musl-"
+CONFIG_TOOLCHAIN_ROOT="/local/ax80/build/recovery-02/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.3.0_musl"
+CONFIG_TOOLCHAIN_BIN_PATH="./bin"
+CONFIG_TOOLCHAIN_INC_PATH="./usr/include ./include/fortify ./include"
+CONFIG_TOOLCHAIN_LIB_PATH="./usr/lib ./lib"
+CONFIG_EXTERNAL_TOOLCHAIN_LIBC_USE_MUSL=y
+CONFIG_EXTERNAL_GCC_VERSION="14.3.0"
+EOF
+make defconfig 2>&1 | tee "$out/logs/defconfig.log"
+cp .config "$out/evidence/build.config"
+./scripts/diffconfig.sh > "$out/evidence/build.config.diff"
+grep -E '^CONFIG_(TARGET.*ax80|PACKAGE_uboot.*ax80|PACKAGE_arm-trusted-firmware|EXTERNAL_TOOLCHAIN|GCC_VERSION|TARGET_ROOTFS_)' .config
+make -j8 download V=s 2>&1 | tee "$out/logs/download.log"
+make -j8 V=s 2>&1 | tee "$out/logs/build-original.log"
+printf 'build-original: exit=0\n' > "$out/evidence/build-result.txt"
+date -u --iso-8601=seconds

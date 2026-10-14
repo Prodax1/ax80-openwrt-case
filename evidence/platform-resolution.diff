@@ -1,0 +1,30 @@
+diff --cc target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index cd29adb259,f6770c8f6e..0000000000
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@@ -210,10 -152,7 +210,11 @@@ platform_do_upgrade() 
+  	routerich,ax3000-ubootmod|\
+  	routerich,be7200|\
+  	snr,snr-cpe-ax2|\
+ +	teralink,tl3020-256mb|\
++ 	tplink,archer-ax80-v1-eu-ubi|\
+ +	tplink,be450-ubi|\
+ +	tplink,tl-7dr7230*|\
+ +	tplink,tl-7dr7250*|\
+  	tplink,tl-xdr4288|\
+  	tplink,tl-xdr6086|\
+  	tplink,tl-xdr6088|\
+@@@ -459,12 -350,8 +460,13 @@@ platform_check_image() 
+  	openwrt,one|\
+  	netcore,n60|\
+  	qihoo,360t7|\
+ +	qihoo,360t7-ubi|\
+  	routerich,ax3000-ubootmod|\
+ +	teralink,tl3020-256mb|\
++ 	tplink,archer-ax80-v1-eu-ubi|\
+ +	tplink,be450-ubi|\
+ +	tplink,tl-7dr7230*|\
+ +	tplink,tl-7dr7250*|\
+  	tplink,tl-xdr4288|\
+  	tplink,tl-xdr6086|\
+  	tplink,tl-xdr6088|\

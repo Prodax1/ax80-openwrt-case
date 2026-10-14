@@ -1,0 +1,88 @@
+HISTORICAL SOURCE — DO NOT EXECUTE. Device pins/paths removed; dependencies and private inputs excluded.
+
+"""Prepare a device-specific calibration candidate offline, never flash it."""
+
+import argparse
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+SPEC = importlib.util.spec_from_file_location("backup_verifier", ROOT.parent / "ax80-verify-backups.py")
+VERIFIER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(VERIFIER)
+
+
+def make_factory(eeprom, mac):
+    if len(eeprom) != 20480 or len(set(eeprom)) < 2:
+        raise ValueError("Invalid or blank EEPROM")
+    if len(mac) != 6 or mac in (bytes(6), b"\xff" * 6) or mac[0] & 1:
+        raise ValueError("Invalid base MAC")
+    data = bytearray(b"\xff" * 0x100000)
+    data[:len(eeprom)] = eeprom
+    data[0x8000:0x8006] = mac
+    return bytes(data)
+
+
+def validate_factory(data, eeprom, mac):
+    if data != make_factory(eeprom, mac):
+        raise ValueError("Factory payload or padding differs")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("first", type=Path)
+    parser.add_argument("second", type=Path)
+    args = parser.parse_args()
+    first, second = args.first.resolve(), args.second.resolve()
+    if first == second:
+        raise ValueError("Two distinct backup sets required")
+    hashes = [VERIFIER.verify(first), VERIFIER.verify(second)]
+    # Live UBIFS raw bytes may differ; factory files must match independently.
+    for name in ("mtd0-boot.bin", "mtd1-u-boot-env.bin", "tp_data-files.tar",
+                 "MT7986_EEPROM.bin", "default-mac"):
+        if hashes[0][name] != hashes[1][name]:
+            raise ValueError("Critical backups disagree: " + name)
+    eeprom = (second / "MT7986_EEPROM.bin").read_bytes()
+    mac = (second / "default-mac").read_bytes()
+    data = make_factory(eeprom, mac)
+    output = ROOT / "preflash-private-local"
+    # Fail closed instead of replacing an earlier candidate or its manifest.
+    output.mkdir(exist_ok=False)
+    image = output / "factory-calibration-candidate.bin"
+    with image.open("xb") as stream:
+        stream.write(data)
+        stream.flush()
+    validate_factory(image.read_bytes(), eeprom, mac)
+    report = {
+        "status": "OFFLINE_CANDIDATE_NOT_FLASH_AUTHORIZATION",
+        "both_backup_sets_verified": True,
+        "verified_files": 20,
+        "critical_backups_agree": True,
+        "raw_tp_data_backups_identical": hashes[0]["mtd5-tp_data.bin"] == hashes[1]["mtd5-tp_data.bin"],
+        "full_eeprom_preserved": True,
+        "eeprom_offset": 0,
+        "eeprom_bytes": len(eeprom),
+        "dts_eeprom_cell_bytes": 4096,
+        "mac_offset": 32768,
+        "mac_bytes": 6,
+        "factory_partition_offset": 1048576,
+        "factory_partition_bytes": len(data),
+        "padding_byte": 255,
+        "candidate_sha256": hashlib.sha256(data).hexdigest(),
+        "source_hashes": {name: hashes[1][name] for name in (
+            "mtd0-boot.bin", "mtd5-tp_data.bin", "MT7986_EEPROM.bin", "default-mac")},
+        "limitations": ["No OOB or unexposed NAND tail in backup",
+                        "Same physical disk is not independent recovery storage",
+                        "No hardware boot or RF calibration test",
+                        "Keep this device-specific artifact private"],
+    }
+    with (output / "factory-manifest.json").open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2)
+        stream.write("\n")
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == "__main__":
+    main()
